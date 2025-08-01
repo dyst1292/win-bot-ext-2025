@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "Winamax Auto Bot",
+  "version": "1.0.0",
+  "description": "Automatización de apuestas en Winamax basado en señales de Telegram",
+  
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting"
+  ],
+  
+  "host_permissions": [
+    "https://api.telegram.org/*",
+    "https://www.winamax.es/*",
+    "https://www.winamax.fr/*",
+    "https://winamax.es/*",
+    "https://winamax.fr/*"
+  ],
+  
+  "background": {
+    "service_worker": "background.js"
+  },
+  
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.winamax.es/*",
+        "https://www.winamax.fr/*",
+        "https://winamax.es/*",
+        "https://winamax.fr/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Winamax Auto Bot"
+  },
+  
+  "web_accessible_resources": [
+    {
+      "resources": ["content.js"],
+      "matches": ["https://*/*"]
+    }
+  ]
+}
