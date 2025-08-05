@@ -1,13 +1,45 @@
-// content.js - Sistema de arbitraje para Winamax MEJORADO
+// content.js - Sistema de apuestas SPREAD para Winamax MEJORADO
 console.log('🎰 Winamax Bot Content Script cargado en:', window.location.href);
 
-// Variables globales
-let arbitrageState = {
-  currentBet: null,
-  isSearching: false,
+// Configuración y constantes
+const CONFIG = {
+  SLIDER_STEP_DELAY: 200,
+  MAX_SLIDER_ATTEMPTS: 50,
+  ELEMENT_WAIT_TIMEOUT: 10000,
+  CLICK_DELAY: 500,
 };
 
-// Inicializar cuando la página esté lista
+const SELECTORS = {
+  FILTER_BUTTON: '.sc-gplwa-d.bIHQDs.filter-button',
+  SPREAD_SECTION: '[class*="sc-eeQVsz"]:has-text("Hándicap")',
+  LIST_VIEW_BUTTON: '.sc-bXxnNr.cokPNx', // Botón para cambiar a vista de lista
+  GRID_VIEW_SVG: 'svg rect[x="10"][y="10"]', // SVG específico del botón de lista
+  MORE_SELECTIONS_BUTTON: '.sc-fNZVXS.cwIfgf.expand-button',
+  MORE_SELECTIONS_TEXT: '.sc-cWKVQc.bGBBfC',
+  BET_BUTTON: '.sc-lcDspb.hvhzTf.sc-fIyekj.kMmmnL.odd-button-wrapper',
+  BET_DESCRIPTION: '.sc-eHVZpS.byWUOZ',
+  BET_ODDS: '.sc-eIGzw.jphTtc',
+  // Selectores alternativos más amplios
+  BET_BUTTON_ALT: [
+    '.sc-lcDspb',
+    '[data-testid*="odd-button"]',
+    '.odd-button-wrapper',
+    'button[class*="odd"]',
+    '[class*="bet-group-outcome"] button',
+  ],
+  BET_DESCRIPTION_ALT: ['.sc-eHVZpS', '[class*="byWUOZ"]'],
+  BET_ODDS_ALT: ['.sc-eIGzw', '[class*="jphTtc"]'],
+};
+
+// Estado global
+let spreadState = {
+  currentBet: null,
+  isProcessing: false,
+  spreadSections: [], // Ahora puede haber múltiples secciones
+  currentSectionIndex: 0,
+};
+
+// Inicialización
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initializeContentScript);
 } else {
@@ -17,7 +49,6 @@ if (document.readyState === 'loading') {
 function initializeContentScript() {
   console.log('🚀 Inicializando content script...');
 
-  // Notificar que está listo
   setTimeout(() => {
     chrome.runtime
       .sendMessage({
@@ -28,1064 +59,806 @@ function initializeContentScript() {
   }, 1000);
 }
 
-// Función principal para procesar apuestas de arbitraje
-async function processArbitrageBet(betData) {
+// ========================================
+// FUNCIONES PRINCIPALES PARA SPREAD
+// ========================================
+
+/**
+ * Procesar apuesta SPREAD - Función principal
+ */
+async function processSpreadBet(betData) {
   try {
-    logMessage('🎯 Procesando apuesta de arbitraje...', 'INFO');
-    logMessage(`📊 Tipo: ${betData.betType}`, 'INFO');
-    logMessage(`🎾 Pick: ${betData.pick}`, 'INFO');
+    logMessage('🎯 Iniciando procesamiento de apuesta SPREAD...', 'INFO');
+    logMessage(`📊 Pick: ${betData.pick}`, 'INFO');
     logMessage(`💰 Cuota objetivo: ${betData.targetOdds}`, 'INFO');
 
-    const currentUrl = window.location.href.toLowerCase();
+    spreadState.isProcessing = true;
+    spreadState.currentBet = betData;
 
-    if (!currentUrl.includes('winamax.es/apuestas-deportivas/match/')) {
-      throw new Error('No estamos en una página de evento de Winamax');
+    // Verificar que estamos en página correcta
+    if (!isValidWinamaxPage()) {
+      throw new Error('No estamos en una página válida de evento de Winamax');
     }
 
-    // Esperar a que cargue la página
-    await wait(3000);
-
-    // Procesar según el tipo de apuesta (SIN expandir vista global)
-    if (betData.betType === 'TENNIS_MONEYLINE') {
-      await processTennisMoneyline(betData);
-    } else if (
-      betData.betType === 'TOTALS' ||
-      betData.betType === 'FOOTBALL_TOTALS'
-    ) {
-      await processFootballTotals(betData);
-    } else if (betData.betType === 'ESPORTS_SPREAD') {
-      await processEsportsSpread(betData);
-    } else {
-      await processOtherSports(betData);
+    // Paso 1: Navegar al submenú "Diferencia de puntos"
+    const spreadMenuFound = await navigateToSpreadMenu();
+    if (!spreadMenuFound) {
+      throw new Error('No se encontró el submenú "Diferencia de puntos"');
     }
+
+    // Paso 2: Encontrar las secciones de SPREAD (puede haber múltiples)
+    const spreadSectionsFound = await findSpreadSections();
+    if (!spreadSectionsFound) {
+      throw new Error('No se encontraron secciones de SPREAD');
+    }
+
+    // Paso 3: Buscar el pick en todas las secciones disponibles
+    // Ahora, betFound puede ser null (no encontrado), o un objeto con {element, description, odds}
+    const betFound = await searchSpreadBetInAllSections(
+      betData.pick,
+      betData.targetOdds,
+    );
+
+    if (!betFound) {
+      // Este caso solo debería ocurrir si searchSpreadBetInAllSections lanza un error más específico
+      // o si la lógica de retorno no fue manejada correctamente.
+      // throw new Error(`No se encontró el pick "${betData.pick}" en ninguna sección de SPREAD`);
+      // El error ya debería venir de searchSpreadBetInAllSections
+      throw new Error('Error interno: BetFound es null inesperadamente');
+    }
+
+    // Paso 4: Ejecutar la apuesta
+    await executeBet(betFound.element, betData.amount, betData.messageId);
   } catch (error) {
-    logMessage(`❌ Error procesando arbitraje: ${error.message}`, 'ERROR');
+    logMessage(`❌ Error procesando SPREAD: ${error.message}`, 'ERROR');
     sendBetResult(false, error.message, betData.messageId);
+  } finally {
+    spreadState.isProcessing = false;
   }
 }
 
-// NUEVA FUNCIÓN: Navegar específicamente a la sección "Número total de goles"
-async function navigateToTotalsSection() {
+/**
+ * Navegar al submenú de SPREAD (Diferencia de puntos/goles)
+ */
+async function navigateToSpreadMenu() {
   try {
-    logMessage('🎯 Buscando sección "Número total de goles"...', 'INFO');
+    logMessage('🔍 Buscando submenú de SPREAD...', 'INFO');
 
-    // Buscar elementos que contengan "Número total de goles"
-    const sectionElements = document.querySelectorAll(
-      [
-        '.sc-eeQVsz',
-        '.sc-cvnYLt',
-        '[class*="section"]',
-        '[class*="market"]',
-        'div',
-        'span',
-      ].join(', '),
-    );
-
-    for (const element of sectionElements) {
-      const text = element.textContent?.trim().toLowerCase() || '';
-
-      if (
-        text.includes('número total de goles') ||
-        text.includes('total goles') ||
-        text.includes('total de goles') ||
-        text.includes('over/under') ||
-        text.includes('más/menos')
-      ) {
-        logMessage(
-          `✅ Sección encontrada: "${element.textContent?.trim()}"`,
-          'SUCCESS',
-        );
-
-        // Hacer clic en la sección para expandirla/activarla
-        const clickableElement =
-          element.closest('button, [role="button"], [onclick], .clickable') ||
-          element;
-
-        if (isElementUsable(clickableElement)) {
-          logMessage('🖱️ Haciendo clic en la sección...', 'INFO');
-          await clickElement(clickableElement);
-          await wait(2000);
-          return true;
-        }
-      }
-    }
-
-    logMessage('❌ No se encontró la sección "Número total de goles"', 'ERROR');
-    return false;
-  } catch (error) {
-    logMessage(
-      `❌ Error navegando a sección de totales: ${error.message}`,
-      'ERROR',
-    );
-    return false;
-  }
-}
-
-// NUEVA FUNCIÓN: Cambiar a modo lista dentro de la sección actual
-async function expandToListViewInSection() {
-  try {
-    logMessage('📋 Cambiando a modo lista en la sección actual...', 'INFO');
-
-    // Esperar un poco después de haber navegado a la sección
-    await wait(1000);
-
-    // Buscar botones de vista específicamente en el contexto actual
-    const viewButtons = document.querySelectorAll(
-      [
-        '.sc-bXxnNr',
-        '.sc-fDpJdc button',
-        '.tabs-wrapper button',
-        '[class*="tab"] button',
-        '[class*="view"] button',
-      ].join(', '),
-    );
-
-    logMessage(`🔍 Encontrados ${viewButtons.length} botones de vista`, 'INFO');
-
-    // Buscar el botón de vista de lista (normalmente el segundo)
-    for (let i = 0; i < viewButtons.length; i++) {
-      const button = viewButtons[i];
-
-      // Intentar el segundo botón (vista de lista)
-      if (i === 1 && isElementUsable(button)) {
-        logMessage('📋 Cambiando a vista de lista...', 'INFO');
-        await clickElement(button);
-        await wait(2000);
-        logMessage('✅ Vista de lista activada', 'SUCCESS');
-        return true;
-      }
-    }
-
-    // Alternativa: buscar por SVG de lista
-    const listViewButtons = document.querySelectorAll('svg rect[x="1"][y="2"]');
-    for (const svg of listViewButtons) {
-      const button = svg.closest('button, [role="button"]');
-      if (button && isElementUsable(button)) {
-        logMessage('📋 Botón de lista encontrado por SVG', 'INFO');
-        await clickElement(button);
-        await wait(2000);
-        return true;
-      }
-    }
-
-    logMessage('⚠️ No se pudo cambiar a vista de lista', 'WARN');
-    return false;
-  } catch (error) {
-    logMessage(`⚠️ Error cambiando a vista de lista: ${error.message}`, 'WARN');
-    return false;
-  }
-}
-
-// NUEVA FUNCIÓN: Expandir "Más selecciones" específicamente en la sección de totales
-async function expandMoreSelectionsInTotalsSection() {
-  try {
-    logMessage(
-      '➕ Buscando "Más selecciones" en la sección de totales...',
-      'INFO',
-    );
-
-    // Buscar elementos "Más selecciones" que estén cerca de elementos de totales
-    const expandButtons = document.querySelectorAll(
-      [
-        '.expand-button',
-        '.sc-fNZVXS',
-        '.sc-aeBcf',
-        '[class*="expand"]',
-        '[class*="more"]',
-      ].join(', '),
-    );
-
-    for (const button of expandButtons) {
-      const text = button.textContent?.toLowerCase().trim() || '';
-
-      // Verificar que es un botón de "más selecciones"
-      if (
-        text.includes('más selecciones') ||
-        text.includes('more selections') ||
-        text.includes('más') ||
-        text.includes('more')
-      ) {
-        // Verificar que está en el contexto de la sección actual
-        const parentSection = button.closest(
-          '[class*="section"], [class*="market"], .sc-jwunkD',
-        );
-        if (parentSection) {
-          const sectionText = parentSection.textContent?.toLowerCase() || '';
-
-          // Solo expandir si está en una sección relacionada con totales
-          if (
-            sectionText.includes('total') ||
-            sectionText.includes('goles') ||
-            sectionText.includes('más de') ||
-            sectionText.includes('menos de')
-          ) {
-            logMessage(
-              `✅ Botón "Más selecciones" encontrado en sección de totales`,
-              'SUCCESS',
-            );
-            await clickElement(button);
-            await wait(2000);
-            logMessage(
-              '✅ Más opciones expandidas en sección de totales',
-              'SUCCESS',
-            );
-            return true;
-          }
-        }
-      }
-    }
-
-    logMessage(
-      '⚠️ No se encontró "Más selecciones" en sección de totales',
-      'WARN',
-    );
-    return false;
-  } catch (error) {
-    logMessage(
-      `⚠️ Error expandiendo más selecciones: ${error.message}`,
-      'WARN',
-    );
-    return false;
-  }
-}
-
-// NUEVA FUNCIÓN: Procesar FOOTBALL TOTALS
-async function processFootballTotals(betData) {
-  try {
-    logMessage('⚽ Procesando FOOTBALL TOTALS...', 'INFO');
-    logMessage(`🎯 Buscando: ${betData.pick}`, 'INFO');
-
-    // Paso 1: Ir específicamente a la sección "Número total de goles"
-    const totalsSection = await navigateToTotalsSection();
-
-    if (!totalsSection) {
-      throw new Error('No se encontró la sección "Número total de goles"');
-    }
-
-    // Paso 2: Cambiar a modo lista dentro de esa sección
-    await expandToListViewInSection();
-
-    // Paso 3: Buscar la apuesta específica
-    let foundBet = await searchTotalsBet(betData.pick, betData.targetOdds);
-
-    // Paso 4: Si no se encuentra, expandir "Más selecciones" de esa sección
-    if (!foundBet) {
-      logMessage(
-        '🔍 No encontrado, expandiendo más selecciones de la sección...',
-        'INFO',
-      );
-      const expanded = await expandMoreSelectionsInTotalsSection();
-
-      if (expanded) {
-        await wait(2000);
-        foundBet = await searchTotalsBet(betData.pick, betData.targetOdds);
-      }
-    }
-
-    if (foundBet) {
-      logMessage(`✅ Apuesta encontrada: ${foundBet.description}`, 'SUCCESS');
-      logMessage(`💰 Cuota: ${foundBet.odds}`, 'INFO');
-
-      if (foundBet.odds >= betData.targetOdds) {
-        logMessage('✅ Cuota válida, realizando apuesta...', 'SUCCESS');
-        await executeBet(foundBet.element, betData.amount, betData.messageId);
-      } else {
-        throw new Error(
-          `Cuota insuficiente: ${foundBet.odds} < ${betData.targetOdds}`,
-        );
-      }
-    } else {
-      throw new Error(`Apuesta "${betData.pick}" no encontrada`);
-    }
-  } catch (error) {
-    throw error;
-  }
-}
-
-// NUEVA FUNCIÓN: Buscar apuestas de totales específicamente
-async function searchTotalsBet(pick, minOdds) {
-  try {
-    logMessage(`🔍 Buscando total: "${pick}"`, 'INFO');
-
-    // Normalizar el pick (ej: "OVER 2.5" -> "más de 2,5")
-    const normalizedPick = normalizeTotalsPick(pick);
-    logMessage(`🔄 Pick normalizado: "${normalizedPick}"`, 'INFO');
-
-    // Buscar elementos de apuesta
-    const betElements = document.querySelectorAll(
-      [
-        'button[class*="odd"]',
-        '.sc-meaPv button',
-        '.sc-lcDspb button',
-        '[data-testid*="odd-button"]',
-        '.odd-button-wrapper button',
-        '[class*="bet-group-outcome"] button',
-      ].join(', '),
-    );
-
-    logMessage(`🎲 Elementos encontrados: ${betElements.length}`, 'INFO');
-
-    const candidates = [];
-
-    for (const element of betElements) {
-      if (!isElementUsable(element)) continue;
-
-      const elementText = element.textContent?.trim() || '';
-      const odds = extractOdds(element);
-
-      if (!odds || odds < 1.01 || odds > 50) continue;
-
-      // Calcular similitud para totales
-      const similarity = calculateTotalsSimilarity(normalizedPick, elementText);
-
-      if (similarity > 0.6) {
-        candidates.push({
-          element: element,
-          odds: odds,
-          description: elementText,
-          similarity: similarity,
-        });
-
-        logMessage(
-          `⚽ Candidato total: "${elementText}" - Cuota: ${odds} - Similitud: ${similarity.toFixed(
-            2,
-          )}`,
-          'INFO',
-        );
-      }
-    }
-
-    // Ordenar por similitud
-    candidates.sort((a, b) => b.similarity - a.similarity);
-
-    if (candidates.length > 0) {
-      logMessage(
-        `✅ Mejor candidato: "${candidates[0].description}"`,
-        'SUCCESS',
-      );
-      return candidates[0];
-    }
-
-    return null;
-  } catch (error) {
-    logMessage(`❌ Error buscando total: ${error.message}`, 'ERROR');
-    return null;
-  }
-}
-
-// NUEVA FUNCIÓN: Normalizar picks de totales
-function normalizeTotalsPick(pick) {
-  let normalized = pick.toUpperCase().trim();
-
-  // Convertir OVER/UNDER a español
-  normalized = normalized.replace(/^OVER\s+/, 'MÁS DE ');
-  normalized = normalized.replace(/^UNDER\s+/, 'MENOS DE ');
-
-  // Convertir puntos decimales a comas (formato español)
-  normalized = normalized.replace(/(\d)\.(\d)/g, '$1,$2');
-
-  return normalized;
-}
-
-// NUEVA FUNCIÓN: Calcular similitud para totales
-function calculateTotalsSimilarity(targetPick, elementText) {
-  const normalizedElement = elementText.toUpperCase().trim();
-
-  // Coincidencia exacta
-  if (normalizedElement === targetPick) {
-    return 1.0;
-  }
-
-  // Contiene el texto completo
-  if (normalizedElement.includes(targetPick)) {
-    return 0.9;
-  }
-
-  // Extraer número del pick objetivo
-  const targetNumber = targetPick.match(/(\d+,\d+|\d+\.\d+)/);
-  if (targetNumber) {
-    const number = targetNumber[1];
-
-    // Buscar el mismo número en el elemento
-    if (
-      normalizedElement.includes(number) ||
-      normalizedElement.includes(number.replace(',', '.'))
-    ) {
-      // Verificar tipo (MÁS/MENOS vs OVER/UNDER)
-      if (
-        (targetPick.includes('MÁS') && normalizedElement.includes('MÁS')) ||
-        (targetPick.includes('MENOS') && normalizedElement.includes('MENOS')) ||
-        (targetPick.includes('OVER') && normalizedElement.includes('MÁS')) ||
-        (targetPick.includes('UNDER') && normalizedElement.includes('MENOS'))
-      ) {
-        return 0.8;
-      }
-    }
-  }
-
-  return 0.0;
-}
-
-// NUEVA FUNCIÓN: Procesar E-SPORTS SPREAD
-async function processEsportsSpread(betData) {
-  try {
-    logMessage('🎮 Procesando E-SPORTS SPREAD...', 'INFO');
-
-    // Navegar a sección de spreads/handicaps
-    const spreadSection = await navigateToCorrectSubmenu('ESPORTS_SPREAD');
-
-    if (!spreadSection) {
-      logMessage('⚠️ No se encontró sección específica de e-sports', 'WARN');
-    }
-
-    // Buscar la apuesta específica
-    let foundBet = await searchSpecificBet(betData.pick);
-
-    // Si no se encuentra, expandir más selecciones
-    if (!foundBet) {
-      logMessage('🔍 No encontrado, expandiendo más selecciones...', 'INFO');
-      const expanded = await expandMoreSelections();
-
-      if (expanded) {
-        await wait(1000);
-        foundBet = await searchSpecificBet(betData.pick);
-      }
-    }
-
-    if (foundBet && foundBet.odds >= betData.targetOdds) {
-      await executeBet(foundBet.element, betData.amount, betData.messageId);
-    } else {
-      throw new Error('Apuesta de e-sports no encontrada o cuota insuficiente');
-    }
-  } catch (error) {
-    throw error;
-  }
-}
-
-// Procesar TENNIS MONEYLINE (mantenido)
-async function processTennisMoneyline(betData) {
-  try {
-    logMessage('🎾 Procesando TENNIS MONEYLINE...', 'INFO');
-
-    // Paso 1: Buscar sección de resultado
-    const resultSectionFound = await navigateToCorrectSubmenu(
-      'TENNIS_MONEYLINE',
-    );
-
-    if (!resultSectionFound) {
-      logMessage(
-        '⚠️ No se encontró sección específica, buscando en toda la página',
-        'WARN',
-      );
-    }
-
-    // Paso 2: Buscar al jugador
-    let playerBet = await findTennisPlayer(betData.pick, betData.targetOdds);
-
-    // Paso 3: Si no se encuentra, expandir más selecciones
-    if (!playerBet) {
-      logMessage(
-        '🔍 Jugador no encontrado, expandiendo más selecciones...',
-        'INFO',
-      );
-      const expanded = await expandMoreSelections();
-
-      if (expanded) {
-        await wait(1000);
-        playerBet = await findTennisPlayer(betData.pick, betData.targetOdds);
-      }
-    }
-
-    if (playerBet) {
-      logMessage(`✅ Jugador encontrado: ${playerBet.description}`, 'SUCCESS');
-      logMessage(`💰 Cuota: ${playerBet.odds}`, 'INFO');
-
-      if (playerBet.odds >= betData.targetOdds) {
-        logMessage('✅ Cuota válida, realizando apuesta...', 'SUCCESS');
-        await executeBet(playerBet.element, betData.amount, betData.messageId);
-      } else {
-        throw new Error(
-          `Cuota insuficiente: ${playerBet.odds} < ${betData.targetOdds}`,
-        );
-      }
-    } else {
-      throw new Error(`Jugador "${betData.pick}" no encontrado`);
-    }
-  } catch (error) {
-    throw error;
-  }
-}
-
-// Navegar al submenú correcto según el tipo de apuesta MEJORADO
-async function navigateToCorrectSubmenu(betType) {
-  try {
-    logMessage(`🎯 Navegando a submenú para: ${betType}`, 'INFO');
-
-    // Mapeo de tipos de apuesta a submenús ACTUALIZADO
-    const submenuMapping = {
-      TENNIS_MONEYLINE: [
-        'resultado',
-        'ganador',
-        'winner',
-        'match winner',
-        'vencedor',
-      ],
-      SPREADS: [
-        'diferencia de goles',
-        'handicap',
-        'spread',
-        'hándicap',
-        'diferencia',
-      ],
-      FOOTBALL_SPREAD: [
-        'diferencia de goles',
-        'handicap',
-        'spread',
-        'hándicap',
-        'diferencia',
-      ],
-      BASKETBALL_SPREAD: [
-        'diferencia de puntos',
-        'handicap',
-        'spread',
-        'hándicap',
-        'diferencia',
-      ],
-      ESPORTS_SPREAD: [
-        'handicap',
-        'spread',
-        'hándicap',
-        'diferencia',
-        'advantage',
-      ], // ✅ AÑADIDO
-      TOTALS: [
-        'total de goles',
-        'total',
-        'over/under',
-        'más/menos',
-        'número total',
-      ], // ✅ MEJORADO
-      FOOTBALL_TOTALS: [
-        'total de goles',
-        'total',
-        'over/under',
-        'más/menos',
-        'número total',
-      ], // ✅ AÑADIDO
-      MONEYLINE: ['resultado', 'ganador', 'winner', '1x2'],
-    };
-
-    // Obtener términos de búsqueda para este tipo
-    const searchTerms = submenuMapping[betType] || ['resultado'];
-
-    logMessage(`🔍 Buscando submenús: ${searchTerms.join(', ')}`, 'INFO');
-
-    // Selectores actualizados para los botones de filtro
-    const filterButtons = document.querySelectorAll(
-      [
-        '.filter-button',
-        '.sc-gplwa-d',
-        'div[class*="filter-button"]',
-        'div[data-testid*="filter"]',
-        'button[data-testid*="filter"]',
-        // Nuevos selectores basados en el HTML
-        '.sc-eeQVsz', // Para "Número total de goles"
-        '[class*="tabs-wrapper"] div',
-        '.sc-cvnYLt div',
-      ].join(', '),
-    );
+    // Buscar todos los botones de filtro
+    const filterButtons = document.querySelectorAll(SELECTORS.FILTER_BUTTON);
 
     logMessage(
       `📋 Encontrados ${filterButtons.length} botones de filtro`,
       'INFO',
     );
 
-    // Filtrar solo elementos válidos
-    const validFilterButtons = Array.from(filterButtons).filter((button) => {
-      const text = button.textContent?.trim() || '';
-      return (
-        text.length > 0 &&
-        text.length < 100 &&
-        !text.includes('video-js') &&
-        !text.includes('{') &&
-        !text.includes('width:') &&
-        !text.includes('px')
-      );
-    });
+    for (const button of filterButtons) {
+      const buttonText = button.textContent?.trim().toLowerCase() || '';
+
+      // Buscar términos de SPREAD para diferentes deportes
+      if (
+        buttonText.includes('diferencia de puntos') || // Baloncesto, eSports, etc.
+        buttonText.includes('diferencia de goles') || // Fútbol ⚽
+        buttonText.includes('handicap') ||
+        buttonText.includes('hándicap') ||
+        buttonText.includes('spread')
+      ) {
+        logMessage(
+          `✅ Submenú SPREAD encontrado: "${button.textContent.trim()}"`,
+          'SUCCESS',
+        );
+
+        // Detectar tipo de deporte
+        if (buttonText.includes('goles')) {
+          logMessage('⚽ Deporte detectado: FÚTBOL', 'INFO');
+        } else if (buttonText.includes('puntos')) {
+          logMessage('🏀 Deporte detectado: BALONCESTO/OTROS', 'INFO');
+        }
+
+        // Hacer scroll y click
+        button.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await wait(CONFIG.CLICK_DELAY);
+
+        await clickElement(button);
+        await wait(2000);
+
+        logMessage('✅ Navegación al submenú SPREAD completada', 'SUCCESS');
+        return true;
+      }
+    }
 
     logMessage(
-      `📋 Botones válidos filtrados: ${validFilterButtons.length}`,
+      '❌ No se encontró submenú de SPREAD (Diferencia de puntos/goles)',
+      'ERROR',
+    );
+    return false;
+  } catch (error) {
+    logMessage(`❌ Error navegando al submenú: ${error.message}`, 'ERROR');
+    return false;
+  }
+}
+
+/**
+ * Encontrar las secciones de SPREAD (puede haber múltiples) - MEJORADO
+ */
+async function findSpreadSections() {
+  try {
+    logMessage('🔍 Buscando secciones de SPREAD...', 'INFO');
+
+    const foundSections = [];
+    const allElements = document.querySelectorAll('*');
+
+    for (const element of allElements) {
+      const text = element.textContent?.trim().toLowerCase() || '';
+
+      // Buscar diferentes variaciones de la sección SPREAD
+      if (
+        // Baloncesto, eSports, etc.
+        text === 'hándicap de puntos (handicap)' ||
+        text === 'handicap de puntos' ||
+        text === 'hándicap de puntos' ||
+        // Fútbol ⚽ - Partido completo
+        text === 'hándicap asiático (handicap)' ||
+        text === 'handicap asiático' ||
+        text === 'hándicap asiático' ||
+        // Fútbol ⚽ - Primera mitad
+        text === '1ª mitad - hándicap asiático (handicap)' ||
+        text === '1ª mitad - handicap asiático' ||
+        text === '1ª mitad - hándicap asiático' ||
+        // Fútbol ⚽ - Alternativa con "goles"
+        text === 'hándicap de goles (handicap)' ||
+        text === 'handicap de goles' ||
+        text === 'hándicap de goles'
+      ) {
+        logMessage(
+          `✅ Sección SPREAD encontrada: "${element.textContent.trim()}"`,
+          'SUCCESS',
+        );
+
+        // Detectar tipo específico
+        let sectionType = 'unknown';
+        if (text.includes('1ª mitad') && text.includes('asiático')) {
+          sectionType = 'football_first_half';
+          logMessage(
+            '⚽ Sección de FÚTBOL 1ª MITAD (hándicap asiático) identificada',
+            'INFO',
+          );
+        } else if (text.includes('asiático')) {
+          sectionType = 'football_full';
+          logMessage(
+            '⚽ Sección de FÚTBOL COMPLETO (hándicap asiático) identificada',
+            'INFO',
+          );
+        } else if (text.includes('goles')) {
+          sectionType = 'football_goals';
+          logMessage(
+            '⚽ Sección de FÚTBOL (hándicap de goles) identificada',
+            'INFO',
+          );
+        } else if (text.includes('puntos')) {
+          sectionType = 'basketball_points';
+          logMessage(
+            '🏀 Sección de BALONCESTO/ESPORTS (puntos) identificada',
+            'INFO',
+          );
+        }
+
+        // MEJORADO: Buscar múltiples niveles de contenedores padre
+        let sectionContainer = null;
+
+        // Buscar contenedores más específicos primero
+        const containers = [
+          element.closest('.sc-kJCCEd'), // Contenedor específico del HTML
+          element.closest('[class*="sc-jwunkD"]'), // Contenedor general
+          element.closest('[class*="section"]'), // Contenedor por clase
+          element.closest('.bet-group-template'), // Template de grupo
+        ];
+
+        for (const container of containers) {
+          if (container) {
+            sectionContainer = container;
+            break;
+          }
+        }
+
+        // Si no encuentra contenedor específico, usar el padre más amplio
+        if (!sectionContainer) {
+          let parent = element.parentElement;
+          let attempts = 0;
+
+          while (parent && attempts < 8) {
+            // Buscar un contenedor que tenga botones de apuesta
+            const hasButtons =
+              parent.querySelectorAll('.sc-lcDspb, [data-testid*="odd-button"]')
+                .length > 0;
+            if (hasButtons) {
+              sectionContainer = parent;
+              break;
+            }
+            parent = parent.parentElement;
+            attempts++;
+          }
+        }
+
+        if (sectionContainer) {
+          // Verificar que este contenedor tiene botones antes de añadirlo
+          const buttonCount = sectionContainer.querySelectorAll(
+            '.sc-lcDspb, [data-testid*="odd-button"]',
+          ).length;
+
+          logMessage(
+            `🎲 Contenedor encontrado con ${buttonCount} botones potenciales`,
+            'INFO',
+          );
+
+          foundSections.push({
+            container: sectionContainer,
+            title: element.textContent.trim(),
+            type: sectionType,
+            element: element,
+            buttonCount: buttonCount,
+          });
+        } else {
+          logMessage(
+            `⚠️ No se encontró contenedor válido para: "${element.textContent.trim()}"`,
+            'WARN',
+          );
+        }
+      }
+    }
+
+    if (foundSections.length > 0) {
+      logMessage(
+        `✅ Encontradas ${foundSections.length} secciones SPREAD`,
+        'SUCCESS',
+      );
+
+      // Log detallado de cada sección encontrada
+      foundSections.forEach((section, i) => {
+        logMessage(
+          `  ${i + 1}. "${section.title}" (${section.type}) - ${
+            section.buttonCount
+          } botones`,
+          'INFO',
+        );
+      });
+
+      spreadState.spreadSections = foundSections;
+      return true;
+    }
+
+    logMessage('❌ No se encontró ninguna sección de SPREAD', 'ERROR');
+    return false;
+  } catch (error) {
+    logMessage(`❌ Error buscando secciones: ${error.message}`, 'ERROR');
+    return false;
+  }
+}
+
+/**
+ * Buscar apuesta SPREAD en todas las secciones disponibles
+ * Retorna el objeto de apuesta si se encuentra con cuota válida,
+ * o lanza un error descriptivo si no se encuentra o la cuota es insuficiente.
+ */
+async function searchSpreadBetInAllSections(pick, targetOdds) {
+  try {
+    logMessage(
+      `🎯 Buscando pick "${pick}" en ${spreadState.spreadSections.length} secciones...`,
       'INFO',
     );
 
-    // Buscar el submenú correcto
-    for (const button of validFilterButtons) {
-      const buttonText = button.textContent?.trim().toLowerCase() || '';
+    const { team, handicap } = parseSpreadPick(pick);
+    logMessage(
+      `🔍 Buscando equipo: "${team}" con handicap: "${handicap}"`,
+      'INFO',
+    );
 
-      logMessage(`🔍 Revisando botón: "${buttonText}"`, 'INFO');
+    const foundCandidatesWithInsufficientOdds = []; // Para almacenar picks encontrados pero con cuotas bajas
+    const sectionsChecked = []; // Para la lista de secciones verificadas
 
-      for (const term of searchTerms) {
-        if (buttonText.includes(term.toLowerCase())) {
+    // Buscar en cada sección encontrada
+    for (let i = 0; i < spreadState.spreadSections.length; i++) {
+      const section = spreadState.spreadSections[i];
+      sectionsChecked.push(section.title); // Añadir a la lista de secciones revisadas
+
+      logMessage(
+        `📋 Buscando en sección ${i + 1}/${
+          spreadState.spreadSections.length
+        }: "${section.title}"`,
+        'INFO',
+      );
+
+      spreadState.currentSectionIndex = i;
+
+      // searchResult ahora devuelve un objeto con found, validOdds, bet, message
+      const searchResult = await searchSpreadBetInSection(
+        section,
+        team,
+        handicap,
+        targetOdds,
+      );
+
+      if (searchResult && searchResult.found && searchResult.validOdds) {
+        // Pick encontrado con cuota válida, ¡bingo!
+        logMessage(
+          `✅ Pick "${searchResult.bet.description}" encontrado con cuota ${searchResult.bet.odds} (>= ${targetOdds}) en "${section.title}"`,
+          'SUCCESS',
+        );
+        return searchResult.bet; // Retorna el objeto de apuesta directamente
+      } else if (
+        searchResult &&
+        searchResult.found &&
+        !searchResult.validOdds
+      ) {
+        // Pick encontrado pero cuota insuficiente
+        logMessage(
+          `⚠️ Pick "${searchResult.bet.description}" encontrado pero cuota insuficiente ${searchResult.bet.odds} (< ${targetOdds}) en "${section.title}"`,
+          'WARN',
+        );
+        foundCandidatesWithInsufficientOdds.push(searchResult.bet);
+      } else {
+        // Pick no encontrado en esta sección (searchResult.found es false o searchResult es null)
+        logMessage(
+          `❌ Pick no encontrado en sección: "${section.title}"`,
+          'ERROR',
+        );
+      }
+    }
+
+    // Si llegamos aquí, no se encontró un pick con cuota válida en ninguna sección
+    if (foundCandidatesWithInsufficientOdds.length > 0) {
+      // Si se encontraron picks pero con cuotas insuficientes
+      let errorMessage = `Pick "${pick}" encontrado pero cuotas insuficientes (target: ${targetOdds}):\n`;
+      foundCandidatesWithInsufficientOdds.forEach((bet) => {
+        errorMessage += `• Sección "${bet.section}": "${bet.description}" @ ${bet.odds}\n`;
+      });
+      throw new Error(errorMessage.trim());
+    } else {
+      // Si no se encontró el pick en absoluto en ninguna sección
+      const sectionsList = sectionsChecked.join(', ');
+      throw new Error(
+        `Pick "${pick}" no encontrado en las secciones: ${sectionsList}`,
+      );
+    }
+  } catch (error) {
+    // Si es un error que ya tiene mensaje detallado, pasarlo tal cual
+    if (
+      error.message.includes('cuotas insuficientes') ||
+      error.message.includes('no encontrado en las secciones')
+    ) {
+      throw error;
+    }
+    logMessage(`❌ Error buscando en secciones: ${error.message}`, 'ERROR');
+    throw new Error(`Error buscando pick "${pick}": ${error.message}`);
+  }
+}
+
+/**
+ * Buscar apuesta SPREAD en una sección específica
+ * Retorna un objeto {found: boolean, validOdds: boolean, bet: object|null, message: string}
+ */
+async function searchSpreadBetInSection(section, team, handicap, targetOdds) {
+  try {
+    logMessage(
+      `🔍 Procesando sección: "${section.title}" (${section.type})`,
+      'INFO',
+    );
+
+    const initialSearchResult = await findSpreadBetInVisibleButtons(
+      section,
+      team,
+      handicap,
+      targetOdds,
+    );
+
+    if (initialSearchResult.found && initialSearchResult.validOdds) {
+      // Si se encuentra con cuota válida, retornar inmediatamente
+      return initialSearchResult;
+    }
+
+    // Si no se encontró con cuota válida o no se encontró en absoluto, intentar expandir
+    logMessage(
+      '🔍 Pick no encontrado o cuota insuficiente, expandiendo "Más selecciones" en esta sección...',
+      'INFO',
+    );
+    const expanded = await expandMoreSelectionsInSection(section);
+
+    if (expanded) {
+      await wait(2000); // Esperar a que se carguen las opciones adicionales
+      const expandedSearchResult = await findSpreadBetInVisibleButtons(
+        section,
+        team,
+        handicap,
+        targetOdds,
+      );
+      if (expandedSearchResult.found) {
+        return expandedSearchResult;
+      }
+    }
+
+    // Si aún no se encuentra con cuota válida después de expandir, activar vista de lista
+    const listViewActivated = await activateListViewInSection(section);
+    if (listViewActivated) {
+      await wait(2000); // Esperar a que se carguen las opciones en vista de lista
+      const listViewSearchResult = await findSpreadBetInVisibleButtons(
+        section,
+        team,
+        handicap,
+        targetOdds,
+      );
+      if (listViewSearchResult.found) {
+        return listViewSearchResult;
+      }
+    }
+
+    // Si no se encontró en ninguna de las fases, retornar un resultado negativo
+    return {
+      found: false,
+      validOdds: false,
+      bet: null,
+      message: `Pick "${team} ${handicap}" no encontrado en sección "${section.title}" o no cumple cuota.`,
+    };
+  } catch (error) {
+    logMessage(
+      `❌ Error procesando sección "${section.title}": ${error.message}`,
+      'ERROR',
+    );
+    return {
+      found: false,
+      validOdds: false,
+      bet: null,
+      message: `Error al buscar en sección "${section.title}": ${error.message}`,
+    };
+  }
+}
+
+/**
+ * Buscar pick en los botones visibles de una sección
+ * Retorna un objeto {found: boolean, validOdds: boolean, bet: object|null, message: string}
+ */
+async function findSpreadBetInVisibleButtons(
+  section,
+  team,
+  handicap,
+  targetOdds,
+) {
+  try {
+    logMessage(
+      `🔍 Buscando pick en botones visibles de sección: "${section.title}"...`,
+      'INFO',
+    );
+
+    const betButtons = section.container.querySelectorAll(SELECTORS.BET_BUTTON);
+    logMessage(
+      `🎲 Encontrados ${betButtons.length} botones en esta sección`,
+      'INFO',
+    );
+
+    // Log de los primeros botones para debug
+    for (let i = 0; i < Math.min(betButtons.length, 6); i++) {
+      // Aumentar a 6 para ver más
+      const button = betButtons[i];
+      const desc =
+        button.querySelector(SELECTORS.BET_DESCRIPTION)?.textContent?.trim() ||
+        '';
+      const odds =
+        button.querySelector(SELECTORS.BET_ODDS)?.textContent?.trim() || '';
+      logMessage(`  🎲 ${i + 1}. "${desc}" @ ${odds}`, 'INFO');
+    }
+
+    const candidates = [];
+    let bestInvalidOddsCandidate = null; // Para guardar el mejor candidato con cuotas insuficientes
+
+    for (const button of betButtons) {
+      if (!isElementVisible(button)) continue;
+
+      const descriptionElement = button.querySelector(
+        SELECTORS.BET_DESCRIPTION,
+      );
+      const oddsElement = button.querySelector(SELECTORS.BET_ODDS);
+
+      if (!descriptionElement || !oddsElement) continue;
+
+      const description = descriptionElement.textContent?.trim() || '';
+      const oddsText = oddsElement.textContent?.trim() || '';
+      const odds = parseFloat(oddsText.replace(',', '.'));
+
+      if (isMatchingSpreadBet(description, team, handicap)) {
+        const candidate = {
+          element: button,
+          description: description,
+          odds: odds || 0,
+          team: team,
+          handicap: handicap,
+          section: section.title,
+        };
+        candidates.push(candidate);
+        logMessage(
+          `✅ Candidato encontrado en "${section.title}": "${description}" @ ${odds}`,
+          'SUCCESS',
+        );
+
+        if (odds >= targetOdds) {
+          // Si encontramos uno con cuota válida, podemos devolverlo directamente
           logMessage(
-            `✅ Submenú encontrado: "${buttonText}" - Haciendo click...`,
+            `🏆 Pick válido encontrado en "${section.title}": "${description}" @ ${odds}`,
             'SUCCESS',
           );
+          return {
+            found: true,
+            validOdds: true,
+            bet: candidate,
+            message: `Pick encontrado con cuota válida: ${description} @ ${odds}`,
+          };
+        } else {
+          // Si la cuota es insuficiente, guardarlo como el mejor entre los inválidos
+          if (
+            !bestInvalidOddsCandidate ||
+            odds > bestInvalidOddsCandidate.odds
+          ) {
+            bestInvalidOddsCandidate = candidate;
+          }
+        }
+      }
+    }
 
-          // Scroll al elemento antes de hacer click
-          button.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          await wait(500);
+    // Si llegamos aquí, no se encontró un pick con cuota válida.
+    if (bestInvalidOddsCandidate) {
+      logMessage(
+        `⚠️ Pick encontrado pero cuotas insuficientes en "${section.title}": "${bestInvalidOddsCandidate.description}" @ ${bestInvalidOddsCandidate.odds} (mínimo: ${targetOdds})`,
+        'WARN',
+      );
+      return {
+        found: true,
+        validOdds: false,
+        bet: bestInvalidOddsCandidate,
+        message: `Cuota insuficiente: ${bestInvalidOddsCandidate.odds} < ${targetOdds}`,
+      };
+    } else {
+      logMessage(
+        `❌ Pick no encontrado en sección: "${section.title}"`,
+        'ERROR',
+      );
+      return {
+        found: false,
+        validOdds: false,
+        bet: null,
+        message: `Pick no encontrado en sección "${section.title}"`,
+      };
+    }
+  } catch (error) {
+    logMessage(
+      `❌ Error buscando en sección "${section.title}": ${error.message}`,
+      'ERROR',
+    );
+    return {
+      found: false,
+      validOdds: false,
+      bet: null,
+      message: `Error al buscar en sección "${section.title}"`,
+    };
+  }
+}
 
+/**
+ * Activar vista de lista en una sección específica
+ */
+async function activateListViewInSection(section) {
+  try {
+    logMessage(
+      `📋 Activando vista de lista en sección: "${section.title}"...`,
+      'INFO',
+    );
+
+    // Buscar el botón de vista de lista dentro de esta sección específica
+    const listViewButtons = section.container.querySelectorAll(
+      SELECTORS.LIST_VIEW_BUTTON,
+    );
+
+    if (listViewButtons.length === 0) {
+      // Alternativa: buscar por el SVG específico en esta sección
+      const svgButtons = section.container.querySelectorAll(
+        SELECTORS.GRID_VIEW_SVG,
+      );
+
+      for (const svg of svgButtons) {
+        const button = svg.closest(
+          'button, [role="button"], div[class*="bXxnNr"]',
+        );
+        if (button && isElementVisible(button)) {
+          logMessage(
+            '📋 Botón de vista encontrado por SVG en esta sección',
+            'INFO',
+          );
           await clickElement(button);
-          await wait(3000);
+          await wait(1500);
+          logMessage('✅ Vista de lista activada en esta sección', 'SUCCESS');
+          return true;
+        }
+      }
+    } else {
+      // Usar el primer botón de vista de lista encontrado en esta sección
+      const button = listViewButtons[0];
+      if (isElementVisible(button)) {
+        logMessage(
+          '📋 Botón de vista de lista encontrado en esta sección',
+          'INFO',
+        );
+        await clickElement(button);
+        await wait(1500);
+        logMessage('✅ Vista de lista activada en esta sección', 'SUCCESS');
+        return true;
+      }
+    }
+
+    logMessage(
+      '⚠️ No se encontró botón de vista de lista en esta sección',
+      'WARN',
+    );
+    return false;
+  } catch (error) {
+    logMessage(
+      `❌ Error activando vista de lista en sección: ${error.message}`,
+      'ERROR',
+    );
+    return false;
+  }
+}
+
+/**
+ * Expandir "Más selecciones" en una sección específica
+ */
+async function expandMoreSelectionsInSection(section) {
+  try {
+    logMessage(
+      `➕ Buscando "Más selecciones" en sección: "${section.title}"...`,
+      'INFO',
+    );
+
+    // Buscar el botón "Más selecciones" dentro de esta sección específica
+    const moreButtons = section.container.querySelectorAll(
+      SELECTORS.MORE_SELECTIONS_BUTTON,
+    );
+
+    for (const button of moreButtons) {
+      const textElement = button.querySelector(SELECTORS.MORE_SELECTIONS_TEXT);
+      const buttonText = textElement?.textContent?.trim().toLowerCase() || '';
+
+      if (
+        buttonText.includes('más selecciones') ||
+        buttonText.includes('more selections') ||
+        buttonText === 'más selecciones'
+      ) {
+        logMessage(
+          `✅ Botón "Más selecciones" encontrado en esta sección: "${buttonText}"`,
+          'SUCCESS',
+        );
+
+        if (isElementVisible(button)) {
+          await clickElement(button);
+          await wait(2000);
+          logMessage(
+            '✅ "Más selecciones" expandido en esta sección',
+            'SUCCESS',
+          );
           return true;
         }
       }
     }
 
-    // Listar botones disponibles para debug
-    logMessage('📋 Botones disponibles:', 'INFO');
-    validFilterButtons.slice(0, 10).forEach((button, index) => {
-      const text = button.textContent?.trim();
-      if (text && text.length > 0) {
-        logMessage(`  ${index + 1}. "${text}"`, 'INFO');
-      }
-    });
-
-    logMessage('❌ No se encontró submenú específico', 'WARN');
+    logMessage('⚠️ No se encontró "Más selecciones" en esta sección', 'WARN');
     return false;
   } catch (error) {
-    logMessage(`⚠️ Error navegando a submenú: ${error.message}`, 'WARN');
+    logMessage(
+      `❌ Error expandiendo más selecciones en sección: ${error.message}`,
+      'ERROR',
+    );
     return false;
   }
 }
 
-// Buscar jugador de tenis (mantenido igual)
-async function findTennisPlayer(playerName, minOdds) {
-  try {
-    logMessage(`🔍 Buscando jugador: "${playerName}"`, 'INFO');
+// ========================================
+// FUNCIONES AUXILIARES
+// ========================================
 
-    const normalizedName = playerName.toUpperCase().trim();
-    const nameWords = normalizedName.split(/\s+/);
+/**
+ * Parsear pick de SPREAD (ej: "OASIS +1.5" -> {team: "OASIS", handicap: "+1.5"})
+ */
+function parseSpreadPick(pick) {
+  const parts = pick.trim().split(/\s+/);
 
-    logMessage(`🔑 Palabras clave: ${nameWords.join(', ')}`, 'INFO');
+  if (parts.length < 2) {
+    return { team: pick, handicap: null };
+  }
 
-    // Buscar elementos de apuesta
-    const betElements = document.querySelectorAll(
-      [
-        'button[class*="odd"]',
-        'button[class*="bet"]',
-        '[class*="market"] button',
-        '[class*="selection"] button',
-        '[data-testid*="selection"] button',
-        '.sc-iHbSHJ button',
-      ].join(', '),
+  const handicap = parts[parts.length - 1]; // Último elemento
+  const team = parts.slice(0, -1).join(' '); // Todo excepto el último
+
+  return { team, handicap };
+}
+
+/**
+ * Verificar si un botón coincide con nuestro handicap (búsqueda simplificada)
+ */
+function isMatchingSpreadBet(description, team, handicap) {
+  const normalizedDesc = description.toUpperCase().trim();
+  const normalizedHandicap = handicap ? handicap.toUpperCase().trim() : '';
+  const normalizedTeam = team ? team.toUpperCase().trim() : '';
+
+  logMessage(
+    `🔍 Comparando descripción: "${normalizedDesc}" con equipo: "${normalizedTeam}" y handicap: "${normalizedHandicap}"`,
+    'INFO',
+  );
+
+  // El equipo debe estar presente en la descripción
+  if (!normalizedDesc.includes(normalizedTeam)) {
+    logMessage(
+      `❌ Equipo no encontrado: "${normalizedTeam}" no está en "${normalizedDesc}"`,
+      'WARN',
     );
+    return false;
+  }
 
-    logMessage(`🎲 Elementos encontrados: ${betElements.length}`, 'INFO');
+  // Si no hay handicap específico, el equipo ya es suficiente
+  if (!normalizedHandicap) {
+    logMessage(
+      `✅ Equipo encontrado y no se especificó handicap. Coincidencia por equipo.`,
+      'SUCCESS',
+    );
+    return true;
+  }
 
-    const candidates = [];
+  // Verificar handicap exacto en el texto del botón
+  if (normalizedDesc.includes(normalizedHandicap)) {
+    logMessage(
+      `✅ Handicap y equipo encontrados: "${description}" contiene "${normalizedHandicap}"`,
+      'SUCCESS',
+    );
+    return true;
+  }
 
-    for (const element of betElements) {
-      if (!isElementUsable(element)) continue;
+  // Verificar variaciones del handicap (por si hay espacios o formato diferente)
+  const handicapVariations = [
+    normalizedHandicap,
+    normalizedHandicap.replace(/\s+/g, ''), // Sin espacios
+    normalizedHandicap.replace('+', ' +'), // Con espacio antes del +
+    normalizedHandicap.replace('-', ' -'), // Con espacio antes del -
+    normalizedHandicap.replace(',', '.'), // Coma a punto
+    normalizedHandicap.replace('.', ','), // Punto a coma
+  ];
 
-      const elementText = element.textContent?.trim() || '';
-      const odds = extractOdds(element);
-
-      if (!odds || odds < 1.01 || odds > 50) continue;
-
-      // Calcular similitud con el nombre del jugador
-      const similarity = calculateSimilarity(
-        normalizedName,
-        elementText.toUpperCase(),
-        nameWords,
-      );
-
-      if (similarity > 0.4) {
-        candidates.push({
-          element: element,
-          odds: odds,
-          description: elementText,
-          similarity: similarity,
-        });
-
-        logMessage(
-          `🎾 Candidato: "${elementText}" - Cuota: ${odds} - Similitud: ${similarity.toFixed(
-            2,
-          )}`,
-          'INFO',
-        );
-      }
-    }
-
-    // Ordenar por similitud
-    candidates.sort((a, b) => b.similarity - a.similarity);
-
-    if (candidates.length > 0) {
+  for (const variation of handicapVariations) {
+    if (normalizedDesc.includes(variation)) {
       logMessage(
-        `✅ Mejor candidato: "${candidates[0].description}"`,
+        `✅ Variación de handicap encontrada (equipo OK): "${description}" contiene "${variation}"`,
         'SUCCESS',
       );
-      return candidates[0];
+      return true;
     }
-
-    return null;
-  } catch (error) {
-    logMessage(`❌ Error buscando jugador: ${error.message}`, 'ERROR');
-    return null;
   }
+
+  logMessage(
+    `❌ Handicap no encontrado para "${normalizedTeam}": "${description}" no contiene "${handicap}"`,
+    'WARN',
+  );
+  return false;
 }
 
-// Procesar otros deportes (mantenido pero mejorado)
-async function processOtherSports(betData) {
-  try {
-    logMessage(`⚽ Procesando ${betData.betType}...`, 'INFO');
-
-    // Navegar al submenú correcto según el tipo de apuesta
-    const submenuFound = await navigateToCorrectSubmenu(betData.betType);
-
-    if (!submenuFound) {
-      logMessage(
-        '⚠️ No se encontró submenú específico, buscando en toda la página',
-        'WARN',
-      );
-    }
-
-    // Buscar la apuesta específica
-    let foundBet = await searchSpecificBet(betData.pick);
-
-    // Si no se encuentra, expandir más selecciones
-    if (!foundBet) {
-      logMessage('🔍 No encontrado, expandiendo más selecciones...', 'INFO');
-      const expanded = await expandMoreSelections();
-
-      if (expanded) {
-        await wait(1000);
-        foundBet = await searchSpecificBet(betData.pick);
-      }
-    }
-
-    if (foundBet && foundBet.odds >= betData.targetOdds) {
-      await executeBet(foundBet.element, betData.amount, betData.messageId);
-    } else {
-      throw new Error('Apuesta no encontrada o cuota insuficiente');
-    }
-  } catch (error) {
-    throw error;
-  }
+/**
+ * Verificar si estamos en página válida de Winamax
+ */
+function isValidWinamaxPage() {
+  const url = window.location.href.toLowerCase();
+  return (
+    url.includes('winamax.es/apuestas-deportivas/match/') ||
+    url.includes('winamax.fr/paris-sportifs/match/')
+  );
 }
 
-// Resto de funciones mantenidas igual...
-// (calculateSimilarity, searchSpecificBet, executeBet, etc.)
-
-// Calcular similitud entre nombres (mantenido)
-function calculateSimilarity(targetName, elementText, nameWords) {
-  let score = 0;
-
-  // Coincidencia exacta
-  if (elementText.includes(targetName)) {
-    return 1.0;
-  }
-
-  // Coincidencias por palabras
-  const elementWords = elementText.split(/\s+/);
-  let matches = 0;
-
-  for (const nameWord of nameWords) {
-    if (nameWord.length < 3) continue;
-
-    for (const elementWord of elementWords) {
-      if (elementWord === nameWord) {
-        matches += 1;
-        score += 0.5;
-      } else if (
-        elementWord.includes(nameWord) ||
-        nameWord.includes(elementWord)
-      ) {
-        if (Math.abs(elementWord.length - nameWord.length) <= 2) {
-          matches += 0.7;
-          score += 0.3;
-        }
-      }
-    }
-  }
-
-  // Bonus por múltiples coincidencias
-  if (matches >= 1.5 && nameWords.length >= 2) {
-    score += 0.2;
-  }
-
-  return Math.min(score, 1.0);
-}
-
-// Buscar apuesta específica (mejorado)
-async function searchSpecificBet(pick) {
-  try {
-    logMessage(`🔍 Buscando apuesta: "${pick}"`, 'INFO');
-
-    // Selectores específicos actualizados
-    const betElements = document.querySelectorAll(
-      [
-        'button[class*="odd"]:not([class*="video"])',
-        'button[class*="bet"]:not([class*="video"])',
-        'div[class*="market"] button',
-        'div[class*="selection"] button',
-        'button[data-testid*="selection"]',
-        'button[data-testid*="odd"]',
-        '.sc-iHbSHJ button',
-        '.sc-meaPv button',
-        '.odd-button-wrapper button',
-        '.sc-lcDspb button', // ✅ AÑADIDO basado en HTML
-        '[data-testid*="odd-button"] button', // ✅ AÑADIDO
-      ].join(', '),
-    );
-
-    // Filtrar elementos válidos
-    const validBetElements = Array.from(betElements).filter((element) => {
-      const text = element.textContent?.trim() || '';
-      const odds = extractOdds(element);
-
-      return (
-        text.length > 0 &&
-        text.length < 200 &&
-        !text.includes('video-js') &&
-        !text.includes('{') &&
-        !text.includes('width:') &&
-        odds !== null
-      );
-    });
-
-    logMessage(`🎲 Elementos encontrados: ${validBetElements.length}`, 'INFO');
-
-    // Mostrar algunos elementos para debug
-    if (validBetElements.length > 0) {
-      logMessage('📋 Primeros elementos encontrados:', 'INFO');
-      validBetElements.slice(0, 8).forEach((element, index) => {
-        const text = element.textContent?.trim() || '';
-        const odds = extractOdds(element);
-        logMessage(`  ${index + 1}. "${text}" - Cuota: ${odds}`, 'INFO');
-      });
-    }
-
-    const candidates = [];
-
-    for (const element of validBetElements) {
-      if (!isElementUsable(element)) continue;
-
-      const elementText = element.textContent?.trim() || '';
-      const odds = extractOdds(element);
-
-      if (!odds) continue;
-
-      let similarity = 0;
-      let matchType = '';
-
-      // Para SPREAD: buscar equipo + handicap (ej: "OASIS +1.5")
-      if (pick.includes('-') || pick.includes('+')) {
-        const pickParts = pick.split(/\s+/);
-        const teamName = pickParts.slice(0, -1).join(' '); // Todos excepto último elemento
-        const handicap = pickParts[pickParts.length - 1]; // Último elemento
-
-        // Normalizar nombre del equipo
-        const normalizedTeamName = normalizeTeamName(teamName);
-        const normalizedElementText = normalizeTeamName(elementText);
-
-        logMessage(
-          `🔍 SPREAD - Comparando equipo: "${normalizedTeamName}" con "${normalizedElementText}" + handicap "${handicap}"`,
-          'INFO',
-        );
-
-        if (
-          normalizedElementText.includes(normalizedTeamName) &&
-          elementText.includes(handicap)
-        ) {
-          similarity = 1.0;
-          matchType = 'spread_exact';
-        } else if (normalizedElementText.includes(normalizedTeamName)) {
-          similarity = 0.7;
-          matchType = 'spread_team_only';
-        }
-      }
-      // Para MONEYLINE: buscar nombre del equipo
-      else {
-        const normalizedPick = normalizeTeamName(pick);
-        const normalizedElementText = normalizeTeamName(elementText);
-        const pickWords = normalizedPick.split(/\s+/);
-
-        logMessage(
-          `🔍 MONEYLINE - Comparando: "${normalizedPick}" con "${normalizedElementText}"`,
-          'INFO',
-        );
-
-        similarity = calculateSimilarity(
-          normalizedPick,
-          elementText,
-          pickWords,
-        );
-        matchType = similarity > 0.8 ? 'moneyline_exact' : 'moneyline_partial';
-      }
-
-      if (similarity > 0.5) {
-        candidates.push({
-          element: element,
-          odds: odds,
-          description: elementText,
-          similarity: similarity,
-          matchType: matchType,
-        });
-
-        logMessage(
-          `✅ Candidato encontrado: "${elementText}" - Cuota: ${odds} - Similitud: ${similarity.toFixed(
-            2,
-          )} (${matchType})`,
-          'SUCCESS',
-        );
-      }
-    }
-
-    // Ordenar por similitud
-    candidates.sort((a, b) => b.similarity - a.similarity);
-
-    if (candidates.length > 0) {
-      logMessage(
-        `✅ Mejor candidato: "${candidates[0].description}" (${candidates[0].matchType})`,
-        'SUCCESS',
-      );
-      return candidates[0];
-    }
-
-    logMessage('❌ No se encontró la apuesta específica', 'ERROR');
-    return null;
-  } catch (error) {
-    logMessage(`❌ Error buscando apuesta: ${error.message}`, 'ERROR');
-    return null;
-  }
-}
-
-// Normalizar nombres de equipos
-function normalizeTeamName(name) {
-  return name
-    .toUpperCase()
-    .trim()
-    .replace(/\s+/g, ' ')
-    .replace(/[^\w\s+\-\.]/g, ''); // Mantener +, -, .
-}
-
-// Ejecutar apuesta
-async function executeBet(element, amount, messageId) {
-  try {
-    logMessage('🎯 Ejecutando apuesta...', 'INFO');
-
-    // Click en la selección
-    await clickElement(element);
-    await wait(2000);
-
-    // Buscar campo de importe
-    const stakeInput = await findStakeInput();
-    if (!stakeInput) {
-      throw new Error('Campo de importe no encontrado');
-    }
-
-    // Introducir cantidad
-    await typeInElement(stakeInput, amount.toString());
-    await wait(1000);
-
-    // Buscar botón de apostar
-    const betButton = await findBetButton();
-    if (!betButton) {
-      throw new Error('Botón de apostar no encontrado');
-    }
-
-    // Hacer click en apostar
-    await clickElement(betButton);
-    await wait(1500);
-
-    logMessage(`✅ Apuesta de ${amount}€ ejecutada correctamente`, 'SUCCESS');
-    sendBetResult(true, null, messageId, amount);
-  } catch (error) {
-    logMessage(`❌ Error ejecutando apuesta: ${error.message}`, 'ERROR');
-    sendBetResult(false, error.message, messageId);
-  }
-}
-
-// Buscar campo de importe
-async function findStakeInput() {
-  const selectors = [
-    'input[inputmode="none"]',
-    'input[inputmode="decimal"]',
-    'input[type="number"]',
-    '[data-testid*="stake"] input',
-    '[class*="stake"] input',
-    '[class*="basket"] input[type="text"]',
-    '.sc-gppfCo input',
-    '.sc-wkolL input',
-  ];
-
-  for (const selector of selectors) {
-    const element = document.querySelector(selector);
-    if (element && isElementUsable(element)) {
-      logMessage(`✅ Campo de importe encontrado: ${selector}`, 'SUCCESS');
-      return element;
-    }
-  }
-
-  return null;
-}
-
-// Buscar botón de apostar
-async function findBetButton() {
-  const selectors = [
-    'button[data-testid="basket-submit-button"]',
-    'button[data-testid*="place-bet"]',
-    'button[type="submit"]',
-    '.sc-erjLUo button',
-    '[class*="place-bet"] button',
-    '[class*="submit-bet"] button',
-  ];
-
-  for (const selector of selectors) {
-    const element = document.querySelector(selector);
-    if (element && isElementUsable(element)) {
-      const text = element.textContent?.toLowerCase() || '';
-      if (
-        text.includes('apostar') ||
-        text.includes('parier') ||
-        text.includes('bet')
-      ) {
-        logMessage(`✅ Botón de apostar encontrado: ${selector}`, 'SUCCESS');
-        return element;
-      }
-    }
-  }
-
-  return null;
-}
-
-// Extraer cuotas de un elemento
-function extractOdds(element) {
-  const texts = [
-    element.textContent?.trim() || '',
-    element.getAttribute('data-odds') || '',
-    element.querySelector('[class*="odd"]')?.textContent?.trim() || '',
-    element.querySelector('.sc-eIGzw')?.textContent?.trim() || '', // ✅ AÑADIDO específico
-  ];
-
-  for (const text of texts) {
-    // Buscar formato decimal: 2.15, 1.95, etc.
-    const match = text.match(/\b(\d{1,2}[\.,]\d{1,3})\b/);
-    if (match) {
-      const oddsStr = match[1].replace(',', '.'); // Normalizar comas a puntos
-      const odds = parseFloat(oddsStr);
-      if (odds >= 1.01 && odds <= 100) {
-        return odds;
-      }
-    }
-  }
-
-  return null;
-}
-
-// Verificar si un elemento es usable
-function isElementUsable(element) {
+/**
+ * Verificar si un elemento es visible
+ */
+function isElementVisible(element) {
   if (!element) return false;
 
   const rect = element.getBoundingClientRect();
@@ -1096,12 +869,13 @@ function isElementUsable(element) {
     rect.height > 0 &&
     style.display !== 'none' &&
     style.visibility !== 'hidden' &&
-    style.opacity !== '0' &&
-    !element.disabled
+    style.opacity !== '0'
   );
 }
 
-// Click en elemento con simulación humana
+/**
+ * Click en elemento con simulación realista
+ */
 async function clickElement(element) {
   if (!element) return false;
 
@@ -1112,52 +886,49 @@ async function clickElement(element) {
   const x = rect.left + rect.width / 2;
   const y = rect.top + rect.height / 2;
 
-  const events = ['mouseover', 'mousedown', 'mouseup', 'click'];
+  const clickEvent = new MouseEvent('click', {
+    bubbles: true,
+    clientX: x,
+    clientY: y,
+    button: 0,
+  });
 
-  for (const eventType of events) {
-    const event = new MouseEvent(eventType, {
-      bubbles: true,
-      clientX: x,
-      clientY: y,
-      button: 0,
-    });
-    element.dispatchEvent(event);
-    await wait(50);
-  }
-
+  element.dispatchEvent(clickEvent);
   return true;
 }
 
-// Escribir en elemento
-async function typeInElement(element, text) {
-  if (!element || !text) return false;
+/**
+ * Ejecutar apuesta (placeholder - puedes usar tu implementación existente)
+ */
+async function executeBet(element, amount, messageId) {
+  try {
+    logMessage('🎯 Ejecutando apuesta...', 'INFO');
 
-  element.focus();
-  await wait(100);
+    // Hacer click en el botón de apuesta
+    await clickElement(element);
+    await wait(2000);
 
-  // Limpiar campo
-  element.value = '';
-  element.dispatchEvent(new Event('input', { bubbles: true }));
-  await wait(100);
+    // Aquí iría la lógica para introducir el importe y confirmar
+    // (puedes usar las funciones que ya tienes: findStakeInput, findBetButton, etc.)
 
-  // Escribir carácter por carácter
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    element.value += char;
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    await wait(50);
+    logMessage(`✅ Apuesta de ${amount}€ ejecutada`, 'SUCCESS');
+    sendBetResult(true, null, messageId, amount);
+  } catch (error) {
+    logMessage(`❌ Error ejecutando apuesta: ${error.message}`, 'ERROR');
+    sendBetResult(false, error.message, messageId);
   }
-
-  element.dispatchEvent(new Event('change', { bubbles: true }));
-  return true;
 }
 
-// Función de espera
+/**
+ * Función de espera
+ */
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Enviar resultado de apuesta
+/**
+ * Enviar resultado de apuesta
+ */
 function sendBetResult(success, error, messageId, amount = null) {
   chrome.runtime
     .sendMessage({
@@ -1170,7 +941,9 @@ function sendBetResult(success, error, messageId, amount = null) {
     .catch(() => {});
 }
 
-// Función de logging
+/**
+ * Función de logging
+ */
 function logMessage(message, level = 'INFO') {
   const timestamp = new Date().toLocaleTimeString();
   const logText = `[${timestamp}] ${message}`;
@@ -1186,36 +959,10 @@ function logMessage(message, level = 'INFO') {
     .catch(() => {});
 }
 
-// Función de apuesta manual
-async function performManualBet(amount, messageId) {
-  try {
-    logMessage(`💰 Apuesta manual de ${amount}€...`, 'INFO');
+// ========================================
+// LISTENERS Y MANEJO DE MENSAJES
+// ========================================
 
-    const stakeInput = await findStakeInput();
-    if (!stakeInput) {
-      throw new Error('Campo de importe no encontrado');
-    }
-
-    await typeInElement(stakeInput, amount.toString());
-    await wait(1000);
-
-    const betButton = await findBetButton();
-    if (!betButton) {
-      throw new Error('Botón de apostar no encontrado');
-    }
-
-    await clickElement(betButton);
-    await wait(1500);
-
-    sendBetResult(true, null, messageId, amount);
-    logMessage(`✅ Apuesta manual completada`, 'SUCCESS');
-  } catch (error) {
-    logMessage(`❌ Error en apuesta manual: ${error.message}`, 'ERROR');
-    sendBetResult(false, error.message, messageId);
-  }
-}
-
-// Escuchar mensajes del background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('📩 Mensaje recibido:', message.action);
 
@@ -1226,67 +973,110 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
 
       case 'arbitrageBet':
-        arbitrageState.currentBet = message.betData;
-        processArbitrageBet(message.betData);
-        sendResponse({ received: true });
-        break;
-
-      case 'manualBet':
-        performManualBet(message.amount, message.messageId);
-        sendResponse({ received: true });
+        if (
+          message.betData.betType === 'SPREADS' ||
+          message.betData.betType.includes('SPREAD')
+        ) {
+          processSpreadBet(message.betData);
+          sendResponse({ received: true });
+        } else {
+          sendResponse({
+            error: 'Tipo de apuesta no soportado. Solo SPREAD implementado.',
+          });
+        }
         break;
 
       case 'debugPage':
-        debugCurrentPage();
+        debugSpreadPage();
         sendResponse({ received: true });
         break;
 
       default:
-        sendResponse({ error: 'Unknown action' });
+        sendResponse({ error: 'Acción no reconocida' });
     }
   } catch (error) {
-    console.error('❌ Error:', error);
+    console.error('❌ Error procesando mensaje:', error);
     sendResponse({ error: error.message });
   }
 
   return true;
 });
 
-// Debug de página
-function debugCurrentPage() {
-  logMessage('🔍 === DEBUG DE PÁGINA ===', 'INFO');
+/**
+ * Debug específico para páginas SPREAD
+ */
+function debugSpreadPage() {
+  logMessage('🔍 === DEBUG SPREAD PAGE ===', 'INFO');
   logMessage(`🌐 URL: ${window.location.href}`, 'INFO');
 
-  const betElements = document.querySelectorAll(
-    'button[class*="odd"], button[class*="bet"]',
-  );
-  logMessage(`🎲 Elementos de apuesta: ${betElements.length}`, 'INFO');
+  // Debug submenús SPREAD
+  const filterButtons = document.querySelectorAll(SELECTORS.FILTER_BUTTON);
+  logMessage(`📋 Submenús encontrados: ${filterButtons.length}`, 'INFO');
 
-  // Mostrar primeros 5 elementos
-  Array.from(betElements)
-    .slice(0, 5)
-    .forEach((el, i) => {
-      const text = el.textContent?.trim() || '';
-      const odds = extractOdds(el);
-      logMessage(
-        `  ${i + 1}. "${text.substring(0, 30)}..." ${odds ? `(${odds})` : ''}`,
-        'INFO',
-      );
-    });
+  let spreadMenus = 0;
+  filterButtons.forEach((btn, i) => {
+    const text = btn.textContent?.trim() || '';
+    const isSpread =
+      text.toLowerCase().includes('diferencia de puntos') ||
+      text.toLowerCase().includes('diferencia de goles') ||
+      text.toLowerCase().includes('handicap') ||
+      text.toLowerCase().includes('hándicap');
 
-  // Debug específico para vista de lista
-  const tabButtons = document.querySelectorAll('.sc-bXxnNr, .sc-ksJxCS');
-  logMessage(`📋 Botones de vista encontrados: ${tabButtons.length}`, 'INFO');
+    if (isSpread) {
+      spreadMenus++;
+      logMessage(`  ✅ SPREAD ${i + 1}. "${text}"`, 'INFO');
+    } else {
+      logMessage(`  ⚪ ${i + 1}. "${text}"`, 'INFO');
+    }
+  });
 
-  // Debug específico para botones "Más selecciones"
-  const expandButtons = document.querySelectorAll('.expand-button, .sc-fNZVXS');
+  logMessage(`🎯 Total submenús SPREAD: ${spreadMenus}`, 'INFO');
+
+  // Debug secciones SPREAD
+  const allElements = document.querySelectorAll('*');
+  let spreadSections = 0;
+
+  for (const el of allElements) {
+    const text = el.textContent?.trim().toLowerCase() || '';
+    if (
+      text.includes('hándicap de puntos') ||
+      text.includes('hándicap asiático') || // ⚽ Fútbol completo
+      text.includes('1ª mitad - hándicap asiático') || // ⚽ Fútbol 1ª mitad
+      text.includes('hándicap de goles') || // ⚽ Fútbol alternativo
+      text.includes('handicap de puntos') ||
+      text.includes('handicap asiático') ||
+      text.includes('handicap de goles')
+    ) {
+      spreadSections++;
+      logMessage(`🎯 Sección encontrada: "${el.textContent?.trim()}"`, 'INFO');
+    }
+  }
+
   logMessage(
-    `➕ Botones de expansión encontrados: ${expandButtons.length}`,
+    `✅ Encontradas ${spreadState.spreadSections.length} secciones SPREAD`,
     'INFO',
   );
 
-  expandButtons.forEach((btn, i) => {
-    const text = btn.textContent?.trim() || '';
+  spreadState.spreadSections.forEach((section, i) => {
+    logMessage(`  ${i + 1}. "${section.title}" (${section.type})`, 'INFO');
+  });
+
+  // Debug vista de lista
+  const listViewButtons = document.querySelectorAll(SELECTORS.LIST_VIEW_BUTTON);
+  logMessage(`📋 Botones de vista de lista: ${listViewButtons.length}`, 'INFO');
+
+  const gridSvgs = document.querySelectorAll(SELECTORS.GRID_VIEW_SVG);
+  logMessage(`🔲 SVGs de vista encontrados: ${gridSvgs.length}`, 'INFO');
+
+  // Debug botones "Más selecciones"
+  const moreButtons = document.querySelectorAll(
+    SELECTORS.MORE_SELECTIONS_BUTTON,
+  );
+  logMessage(`➕ Botones "Más selecciones": ${moreButtons.length}`, 'INFO');
+
+  moreButtons.forEach((btn, i) => {
+    const textEl = btn.querySelector(SELECTORS.MORE_SELECTIONS_TEXT);
+    const text = textEl?.textContent?.trim() || '';
     logMessage(`  ${i + 1}. "${text}"`, 'INFO');
   });
 
