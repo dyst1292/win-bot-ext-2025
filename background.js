@@ -643,7 +643,10 @@ async function processArbitrageMessage(message, updateId) {
       }
 
       sendLogToPopup(`🎯 Pick: ${arbitrageData.pick}`);
-      sendLogToPopup(`💰 Cuota objetivo: ${arbitrageData.targetOdds}`);
+      // MODIFICADO: Ahora el log mostrará la "Odds to beat"
+      sendLogToPopup(
+        `💰 Cuota objetivo (Odds to beat): ${arbitrageData.targetOdds}`,
+      );
       sendLogToPopup(`🏆 Tipo: ${arbitrageData.betType}`);
       sendLogToPopup(`🔗 Link: ${arbitrageData.link}`);
 
@@ -718,7 +721,7 @@ function parseArbitrageMessage(text, messageId) {
 
     const lines = text.split('\n');
     let pick = null;
-    let targetOdds = null;
+    let targetOdds = null; // Esta es la que cambiaremos
     let link = null;
     let betType = null;
     let player = null;
@@ -766,6 +769,7 @@ function parseArbitrageMessage(text, messageId) {
           }
         } else if (betType === 'MONEYLINE' || betType === 'TENNIS_MONEYLINE') {
           // Para moneyline: buscar nombre del equipo/jugador (sin números)
+          // Excluir líneas que son claramente cuotas o enlaces
           if (
             lineTrimmed.length > 3 &&
             lineTrimmed.match(/^[A-Z\s]+$/) &&
@@ -782,23 +786,52 @@ function parseArbitrageMessage(text, messageId) {
       }
     }
 
-    // Extraer cuota objetivo MEJORADO (primera cuota en formato X.XX >>> Y.YY)
-    const oddsMatch = text.match(/(\d+\.\d+)\s*>>>\s*(\d+\.\d+)/);
-    if (oddsMatch) {
-      targetOdds = parseFloat(oddsMatch[1]); // Usar la primera cuota como objetivo
-      sendLogToPopup(
-        `💰 Cuotas encontradas: ${oddsMatch[1]} >>> ${oddsMatch[2]}`,
-        'INFO',
-      );
+    // **MODIFICACIÓN AQUÍ:** Extraer "Odds to beat" como targetOdds
+    const oddsToBeatMatch = text.match(/Odds to beat:\s*(\d+\.\d+)/);
+    if (oddsToBeatMatch) {
+      targetOdds = parseFloat(oddsToBeatMatch[1]);
+      sendLogToPopup(`💰 Odds to beat encontrada: ${targetOdds}`, 'INFO');
+    } else {
+      // Fallback: Si no se encuentra "Odds to beat", usar la primera cuota del >>>
+      const oddsMatch = text.match(/(\d+\.\d+)\s*>>>\s*(\d+\.\d+)/);
+      if (oddsMatch) {
+        targetOdds = parseFloat(oddsMatch[1]);
+        sendLogToPopup(
+          `💰 No se encontró 'Odds to beat', usando la primera cuota del rango: ${targetOdds}`,
+          'WARN',
+        );
+      }
     }
 
     // Extraer enlace de Winamax MEJORADO
-    const linkMatch = text.match(
-      /https?:\/\/www\.winamax\.es\/apuestas-deportivas\/match\/\d+/,
+    // Busca específicamente el enlace de Winamax en la sección "Enlaces de la Apuesta:"
+    const winamaxLinkSectionMatch = text.match(
+      /🔗 Enlaces de la Apuesta:([\s\S]*?)(?=\n\n|$)/,
     );
-    if (linkMatch) {
-      link = linkMatch[0];
-      sendLogToPopup(`🔗 Enlace encontrado: ${link}`, 'INFO');
+    if (winamaxLinkSectionMatch) {
+      const winamaxLinkMatch = winamaxLinkSectionMatch[1].match(
+        /https?:\/\/www\.winamax\.es\/apuestas-deportivas\/match\/\d+/,
+      );
+      if (winamaxLinkMatch) {
+        link = winamaxLinkMatch[0];
+        sendLogToPopup(
+          `🔗 Enlace de Winamax (sección) encontrado: ${link}`,
+          'INFO',
+        );
+      }
+    }
+    // Si no se encontró en la sección específica, buscar en todo el texto (fallback)
+    if (!link) {
+      const genericWinamaxLinkMatch = text.match(
+        /https?:\/\/www\.winamax\.es\/apuestas-deportivas\/match\/\d+/,
+      );
+      if (genericWinamaxLinkMatch) {
+        link = genericWinamaxLinkMatch[0];
+        sendLogToPopup(
+          `🔗 Enlace de Winamax (genérico) encontrado: ${link}`,
+          'INFO',
+        );
+      }
     }
 
     // NUEVO: Extraer información adicional para tenis
