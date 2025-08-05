@@ -1,10 +1,10 @@
-// background.js - Service Worker para Chrome con sistema de arbitraje
+// background.js - Service Worker para Chrome con sistema de arbitraje mejorado
 let botConfig = {
   // Valores por defecto (placeholder) - se sobreescriben desde storage
-  token: process.env.TELEGRAM_BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE',
-  chatId: process.env.TELEGRAM_CHAT_ID || 'YOUR_CHAT_ID_HERE',
-  email: process.env.WINAMAX_EMAIL || 'your@email.com',
-  password: process.env.WINAMAX_PASSWORD || 'your_password',
+  token: '',
+  chatId: '',
+  email: 'your@email.com',
+  password: 'your_password',
   active: false,
   loggedIn: false,
   lastUpdateId: 0,
@@ -56,6 +56,17 @@ chrome.storage.local
         botConfig.token ? 'Configurado' : 'Pendiente'
       }`,
     );
+
+    // Inicializar timestamp de actividad
+    botConfig.lastActivity = Date.now();
+
+    // Auto-iniciar keep-alive si hay configuración válida
+    if (botConfig.token && botConfig.chatId) {
+      sendLogToPopup(
+        '🟢 Configuración válida detectada - Iniciando keep-alive automático',
+      );
+      startKeepAlive();
+    }
   })
   .catch((error) => {
     console.error('Error loading config:', error);
@@ -66,6 +77,41 @@ chrome.storage.local
 
 let pollingInterval = null;
 const POLL_INTERVAL = 5000;
+
+// Sistema de keep-alive para mantener el service worker activo
+let keepAliveInterval = null;
+const KEEP_ALIVE_INTERVAL = 25000; // 25 segundos (antes de que Chrome lo suspenda)
+
+function startKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+  }
+
+  keepAliveInterval = setInterval(() => {
+    // Ping silencioso para mantener activo el service worker
+    chrome.runtime
+      .getPlatformInfo()
+      .then(() => {
+        // Solo log cada 5 minutos para no saturar
+        if (Date.now() % 300000 < KEEP_ALIVE_INTERVAL) {
+          sendLogToPopup('🔄 Bot activo - Keep alive ejecutado');
+        }
+      })
+      .catch(() => {
+        // Ignorar errores de keep-alive
+      });
+  }, KEEP_ALIVE_INTERVAL);
+
+  sendLogToPopup('🟢 Sistema keep-alive iniciado');
+}
+
+function stopKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
+  sendLogToPopup('🔴 Sistema keep-alive detenido');
+}
 
 // Sistema de cola para procesar mensajes uno por uno
 let messageQueue = [];
@@ -305,6 +351,9 @@ async function startBot() {
   botConfig.active = true;
   sendLogToPopup('🚀 Bot iniciado - Sistema de arbitraje activo');
 
+  // Iniciar sistema keep-alive
+  startKeepAlive();
+
   await initializeTelegramOffset();
 
   pollingInterval = setInterval(pollTelegramUpdates, POLL_INTERVAL);
@@ -388,10 +437,14 @@ async function testTelegramConnection(token) {
 
 function stopBot() {
   botConfig.active = false;
+
   if (pollingInterval) {
     clearInterval(pollingInterval);
     pollingInterval = null;
   }
+
+  // Detener sistema keep-alive
+  stopKeepAlive();
 
   messageQueue = [];
   isProcessingMessage = false;
@@ -438,6 +491,9 @@ async function pollTelegramUpdates() {
 
         processMessageQueue();
       }
+
+      // Actualizar timestamp de última actividad
+      botConfig.lastActivity = Date.now();
     } else {
       sendLogToPopup(
         `❌ Error en respuesta de Telegram: ${
@@ -448,29 +504,39 @@ async function pollTelegramUpdates() {
   } catch (error) {
     console.error('Error polling Telegram:', error);
     sendLogToPopup(`❌ Error Telegram: ${error.message}`);
+
+    // Si hay error de conexión, intentar reconectar en 30 segundos
+    if (botConfig.active) {
+      setTimeout(() => {
+        if (botConfig.active) {
+          sendLogToPopup('🔄 Reintentando conexión con Telegram...');
+        }
+      }, 30000);
+    }
   }
 }
 
 function addMessageToQueue(message, updateId) {
   const text = message.text || '';
 
-  // Buscar patrones de arbitraje deportivo
+  // Buscar patrones de arbitraje deportivo MEJORADO
   const arbitragePatterns = [
-    // Patrones específicos de arbitraje
+    // Patrones específicos de deportes
+    /TENNIS.*MONEYLINE/i,
     /FOOTBALL.*SPREAD/i,
     /BASKETBALL.*SPREAD/i,
     /TENNIS.*SPREAD/i,
     /⚽.*SPREAD/i,
     /🏀.*SPREAD/i,
     /🎾.*SPREAD/i,
-    // Patrones de cuotas
+    /🎾.*MONEYLINE/i,
+    // Patrones de cuotas y enlaces
     /\d+\.\d+\s*>>>\s*\d+\.\d+/,
     /\[\d+\.\d+%\]/,
-    // Enlaces de Winamax
-    /winamax\.es\/apuestas-deportivas/i,
-    /winamax\.fr\/paris-sportifs/i,
+    // Enlaces de Winamax ESPECÍFICOS
+    /winamax\.es\/apuestas-deportivas\/match\/\d+/i,
+    /winamax\.fr\/paris-sportifs\/match\/\d+/i,
     // Patrones generales de SureBet
-    '(SureBet)',
     'surebet',
     'arbitrage',
     'winamax',
@@ -484,7 +550,12 @@ function addMessageToQueue(message, updateId) {
     }
   });
 
-  if (isArbitrageMessage) {
+  // NUEVO: Verificar si tiene enlace de Winamax (requerido)
+  const hasWinamaxLink = /winamax\.es\/apuestas-deportivas\/match\/\d+/i.test(
+    text,
+  );
+
+  if (isArbitrageMessage && hasWinamaxLink) {
     messageQueue.push({
       message: message,
       updateId: updateId,
@@ -495,10 +566,21 @@ function addMessageToQueue(message, updateId) {
     sendLogToPopup(
       `🎯 Mensaje de arbitraje añadido a la cola. Cola actual: ${messageQueue.length} mensajes`,
     );
+
+    // Log del tipo de mensaje detectado
+    if (/TENNIS.*MONEYLINE/i.test(text)) {
+      sendLogToPopup('🎾 Tipo: TENNIS MONEYLINE detectado');
+    } else if (/FOOTBALL.*SPREAD/i.test(text)) {
+      sendLogToPopup('⚽ Tipo: FOOTBALL SPREAD detectado');
+    } else if (/BASKETBALL.*SPREAD/i.test(text)) {
+      sendLogToPopup('🏀 Tipo: BASKETBALL SPREAD detectado');
+    }
   } else {
     if (Math.random() < 0.1) {
       sendLogToPopup(
-        `📄 Mensaje normal ignorado: "${text.substring(0, 30)}..."`,
+        `📄 Mensaje ignorado: "${text.substring(0, 30)}..." ${
+          !hasWinamaxLink ? '(sin enlace)' : ''
+        }`,
       );
     }
   }
@@ -515,25 +597,30 @@ async function processMessageQueue() {
     const messageData = messageQueue.shift();
 
     sendLogToPopup(
-      `🔄 Procesando mensaje de arbitraje. Restantes: ${messageQueue.length}`,
+      `🔄 Procesando mensaje de arbitraje (${messageQueue.length} restantes en cola)`,
     );
 
+    // Procesar el mensaje y ESPERAR a que termine completamente
     await processArbitrageMessage(messageData.message, messageData.updateId);
+
+    // El mensaje se procesará completamente antes de continuar
+    sendLogToPopup(`✅ Mensaje completado. Continuando con cola...`);
   } catch (error) {
     sendLogToPopup(`❌ Error procesando mensaje de cola: ${error.message}`);
     console.error('Error processing queue message:', error);
   } finally {
     isProcessingMessage = false;
 
+    // Esperar un poco antes de procesar el siguiente mensaje
     if (messageQueue.length > 0) {
       sendLogToPopup(
         `⏳ Esperando antes de procesar siguiente mensaje. Cola: ${messageQueue.length}`,
       );
       setTimeout(() => {
         processMessageQueue();
-      }, 3000); // Más tiempo entre mensajes para arbitraje
+      }, 2000); // Pausa entre mensajes
     } else {
-      sendLogToPopup('✅ Cola de mensajes procesada completamente');
+      sendLogToPopup('✅ Toda la cola de mensajes procesada completamente');
     }
   }
 }
@@ -544,29 +631,85 @@ async function processArbitrageMessage(message, updateId) {
 
   sendLogToPopup(`📝 Procesando mensaje de arbitraje ID ${messageId}`);
 
-  try {
-    // Parsear el mensaje de arbitraje
-    const arbitrageData = parseArbitrageMessage(text, messageId);
+  return new Promise(async (resolve, reject) => {
+    try {
+      // Parsear el mensaje de arbitraje MEJORADO
+      const arbitrageData = parseArbitrageMessage(text, messageId);
 
-    if (!arbitrageData) {
-      sendLogToPopup('❌ No se pudo parsear el mensaje de arbitraje');
-      return;
+      if (!arbitrageData) {
+        sendLogToPopup('❌ No se pudo parsear el mensaje de arbitraje');
+        reject(new Error('No se pudo parsear el mensaje'));
+        return;
+      }
+
+      sendLogToPopup(`🎯 Pick: ${arbitrageData.pick}`);
+      sendLogToPopup(`💰 Cuota objetivo: ${arbitrageData.targetOdds}`);
+      sendLogToPopup(`🏆 Tipo: ${arbitrageData.betType}`);
+      sendLogToPopup(`🔗 Link: ${arbitrageData.link}`);
+
+      // Configurar timeout para este mensaje específico
+      const messageTimeout = setTimeout(() => {
+        sendLogToPopup(
+          `⏰ Timeout para mensaje ${messageId} - Continuando con siguiente`,
+        );
+        cleanup();
+        reject(new Error('Timeout procesando mensaje'));
+      }, 60000); // 60 segundos máximo por mensaje
+
+      // Configurar listener para el resultado de este mensaje específico
+      const resultListener = (message, sender) => {
+        if (message.action === 'betResult' && message.messageId === messageId) {
+          clearTimeout(messageTimeout);
+
+          const result = message.success
+            ? `✅ Apuesta procesada exitosamente: ${
+                message.amount || botConfig.defaultBetAmount
+              }€`
+            : `⚠️ Error en apuesta: ${message.error || 'Error desconocido'}`;
+
+          sendLogToPopup(result);
+
+          // Respuesta específica para arbitraje
+          const telegramResponse = message.success
+            ? `✅ Arbitraje ejecutado: ${
+                message.amount || botConfig.defaultBetAmount
+              }€`
+            : `❌ Arbitraje falló: ${message.error || 'Error desconocido'}`;
+
+          sendTelegramMessage(telegramResponse, messageId);
+
+          cleanup();
+
+          if (message.success) {
+            resolve(`Apuesta completada: ${message.amount}€`);
+          } else {
+            reject(new Error(message.error || 'Error en apuesta'));
+          }
+        }
+      };
+
+      // Función de limpieza
+      const cleanup = () => {
+        chrome.runtime.onMessage.removeListener(resultListener);
+        clearTimeout(messageTimeout);
+      };
+
+      // Añadir listener
+      chrome.runtime.onMessage.addListener(resultListener);
+
+      // Navegar al enlace de Winamax
+      if (arbitrageData.link) {
+        await navigateToArbitrageLink(arbitrageData);
+      } else {
+        cleanup();
+        reject(new Error('No se encontró enlace de Winamax en el mensaje'));
+      }
+    } catch (error) {
+      sendLogToPopup(`❌ Error procesando arbitraje: ${error.message}`);
+      console.error('Error processing arbitrage:', error);
+      reject(error);
     }
-
-    sendLogToPopup(`🎯 Pick: ${arbitrageData.pick}`);
-    sendLogToPopup(`💰 Cuota objetivo: ${arbitrageData.targetOdds}`);
-    sendLogToPopup(`🔗 Link: ${arbitrageData.link}`);
-
-    // Navegar al enlace de Winamax
-    if (arbitrageData.link) {
-      await navigateToArbitrageLink(arbitrageData);
-    } else {
-      sendLogToPopup('❌ No se encontró enlace de Winamax en el mensaje');
-    }
-  } catch (error) {
-    sendLogToPopup(`❌ Error procesando arbitraje: ${error.message}`);
-    console.error('Error processing arbitrage:', error);
-  }
+  });
 }
 
 function parseArbitrageMessage(text, messageId) {
@@ -578,9 +721,21 @@ function parseArbitrageMessage(text, messageId) {
     let targetOdds = null;
     let link = null;
     let betType = null;
+    let player = null;
 
-    // Detectar tipo de apuesta del header
-    if (text.includes('(TOTALS)') || text.includes('TOTALS')) {
+    // Detectar tipo de apuesta del header MEJORADO
+    if (text.includes('TENNIS') && text.includes('MONEYLINE')) {
+      betType = 'TENNIS_MONEYLINE';
+      sendLogToPopup('🎾 Tipo detectado: TENNIS MONEYLINE', 'INFO');
+
+      // Para tenis moneyline, buscar el jugador en formato **PLAYER**
+      const playerMatch = text.match(/\*\*([^*]+)\*\*/);
+      if (playerMatch) {
+        player = playerMatch[1].trim();
+        pick = player; // El pick es directamente el nombre del jugador
+        sendLogToPopup(`🎾 Jugador detectado: ${player}`, 'INFO');
+      }
+    } else if (text.includes('(TOTALS)') || text.includes('TOTALS')) {
       betType = 'TOTALS';
     } else if (text.includes('(SPREAD)') || text.includes('SPREADS')) {
       betType = 'SPREADS';
@@ -588,83 +743,79 @@ function parseArbitrageMessage(text, messageId) {
       betType = 'MONEYLINE';
     }
 
-    sendLogToPopup(`📊 Tipo detectado: ${betType || 'UNKNOWN'}`, 'INFO');
+    // Si no se detectó pick con el método específico, usar método general
+    if (!pick) {
+      for (const line of lines) {
+        const lineTrimmed = line.trim();
 
-    // Extraer el pick según el tipo
-    for (const line of lines) {
-      const lineTrimmed = line.trim();
-
-      if (betType === 'TOTALS') {
-        // Para totales: buscar OVER/UNDER con números
-        const totalMatch = lineTrimmed.match(/^(OVER|UNDER)\s+(\d+\.?\d*)$/i);
-        if (totalMatch) {
-          pick = `${totalMatch[1]} ${totalMatch[2]}`;
-          break;
-        }
-      } else if (betType === 'SPREADS') {
-        // Para spreads: buscar equipo con +/-
-        const spreadMatch = lineTrimmed.match(/^([A-Z\s]+)\s*([+-]\d+\.?\d*)$/);
-        if (spreadMatch) {
-          pick = `${spreadMatch[1].trim()} ${spreadMatch[2]}`;
-          break;
-        }
-      } else if (betType === 'MONEYLINE') {
-        // Para moneyline: buscar nombre del equipo (sin números)
-        if (
-          lineTrimmed.length > 3 &&
-          lineTrimmed.match(/^[A-Z\s]+$/) &&
-          !lineTrimmed.includes('BASKETBALL') &&
-          !lineTrimmed.includes('FOOTBALL') &&
-          !lineTrimmed.match(/\d+\.\d+/) &&
-          !lineTrimmed.includes('>>>')
-        ) {
-          pick = lineTrimmed;
-          break;
-        }
-      } else {
-        // Detección automática si no se especifica tipo
-        // Primero intentar spread (equipo + número)
-        const spreadMatch = lineTrimmed.match(/^([A-Z\s]+)\s*([+-]\d+\.?\d*)$/);
-        if (spreadMatch) {
-          pick = `${spreadMatch[1].trim()} ${spreadMatch[2]}`;
-          betType = 'SPREADS';
-          break;
-        }
-
-        // Luego intentar total (OVER/UNDER)
-        const totalMatch = lineTrimmed.match(/^(OVER|UNDER)\s+(\d+\.?\d*)$/i);
-        if (totalMatch) {
-          pick = `${totalMatch[1]} ${totalMatch[2]}`;
-          betType = 'TOTALS';
-          break;
-        }
-
-        // Finalmente moneyline (solo nombre)
-        if (
-          lineTrimmed.length > 3 &&
-          lineTrimmed.match(/^[A-Z\s]+$/) &&
-          !lineTrimmed.includes('BASKETBALL') &&
-          !lineTrimmed.includes('FOOTBALL') &&
-          !lineTrimmed.match(/\d+\.\d+/) &&
-          !lineTrimmed.includes('>>>')
-        ) {
-          pick = lineTrimmed;
-          betType = 'MONEYLINE';
-          break;
+        if (betType === 'TOTALS') {
+          // Para totales: buscar OVER/UNDER con números
+          const totalMatch = lineTrimmed.match(/^(OVER|UNDER)\s+(\d+\.?\d*)$/i);
+          if (totalMatch) {
+            pick = `${totalMatch[1]} ${totalMatch[2]}`;
+            break;
+          }
+        } else if (betType === 'SPREADS') {
+          // Para spreads: buscar equipo con +/-
+          const spreadMatch = lineTrimmed.match(
+            /^([A-Z\s]+)\s*([+-]\d+\.?\d*)$/,
+          );
+          if (spreadMatch) {
+            pick = `${spreadMatch[1].trim()} ${spreadMatch[2]}`;
+            break;
+          }
+        } else if (betType === 'MONEYLINE' || betType === 'TENNIS_MONEYLINE') {
+          // Para moneyline: buscar nombre del equipo/jugador (sin números)
+          if (
+            lineTrimmed.length > 3 &&
+            lineTrimmed.match(/^[A-Z\s]+$/) &&
+            !lineTrimmed.includes('BASKETBALL') &&
+            !lineTrimmed.includes('FOOTBALL') &&
+            !lineTrimmed.includes('TENNIS') &&
+            !lineTrimmed.match(/\d+\.\d+/) &&
+            !lineTrimmed.includes('>>>')
+          ) {
+            pick = lineTrimmed;
+            break;
+          }
         }
       }
     }
 
-    // Extraer cuota objetivo (primera cuota en formato X.XX >>> Y.YY)
+    // Extraer cuota objetivo MEJORADO (primera cuota en formato X.XX >>> Y.YY)
     const oddsMatch = text.match(/(\d+\.\d+)\s*>>>\s*(\d+\.\d+)/);
     if (oddsMatch) {
       targetOdds = parseFloat(oddsMatch[1]); // Usar la primera cuota como objetivo
+      sendLogToPopup(
+        `💰 Cuotas encontradas: ${oddsMatch[1]} >>> ${oddsMatch[2]}`,
+        'INFO',
+      );
     }
 
-    // Extraer enlace de Winamax
-    const linkMatch = text.match(/WinamaxES\s*\((https?:\/\/[^\)]+)\)/);
+    // Extraer enlace de Winamax MEJORADO
+    const linkMatch = text.match(
+      /https?:\/\/www\.winamax\.es\/apuestas-deportivas\/match\/\d+/,
+    );
     if (linkMatch) {
-      link = linkMatch[1];
+      link = linkMatch[0];
+      sendLogToPopup(`🔗 Enlace encontrado: ${link}`, 'INFO');
+    }
+
+    // NUEVO: Extraer información adicional para tenis
+    let matchInfo = null;
+    if (betType === 'TENNIS_MONEYLINE') {
+      // Buscar información del partido (ej: "Tristan Schoolkate v Colton Smith")
+      const matchPattern =
+        /([A-Z][a-z]+\s+[A-Z][a-z]+)\s+v\s+([A-Z][a-z]+\s+[A-Z][a-z]+)/;
+      const matchMatch = text.match(matchPattern);
+      if (matchMatch) {
+        matchInfo = {
+          player1: matchMatch[1].trim(),
+          player2: matchMatch[2].trim(),
+          fullMatch: matchMatch[0],
+        };
+        sendLogToPopup(`🎾 Partido: ${matchInfo.fullMatch}`, 'INFO');
+      }
     }
 
     // Validar datos mínimos
@@ -672,6 +823,7 @@ function parseArbitrageMessage(text, messageId) {
       sendLogToPopup(
         `⚠️ Datos incompletos - Pick: ${pick}, Odds: ${targetOdds}, Link: ${!!link}, Type: ${betType}`,
       );
+      sendLogToPopup(`🔍 Debug - Texto completo: ${text}`, 'INFO');
       return null;
     }
 
@@ -686,10 +838,13 @@ function parseArbitrageMessage(text, messageId) {
       amount: botConfig.defaultBetAmount,
       messageId: messageId,
       betType: betType,
+      player: player,
+      matchInfo: matchInfo,
       originalText: text,
     };
   } catch (error) {
     sendLogToPopup(`❌ Error parseando mensaje: ${error.message}`);
+    console.error('Error parsing message:', error);
     return null;
   }
 }
@@ -726,9 +881,9 @@ async function navigateToArbitrageLink(arbitrageData) {
       });
     }
 
-    // Esperar a que cargue la página
+    // Esperar a que cargue la página MEJORADO
     sendLogToPopup('⏳ Esperando a que cargue la página del evento...');
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await new Promise((resolve) => setTimeout(resolve, 6000)); // Más tiempo para cargar
 
     // Enviar datos de arbitraje al content script
     if (await waitForContentScript(targetTab.id)) {
@@ -896,29 +1051,29 @@ chrome.runtime.onMessage.addListener((message, sender) => {
       sendTelegramMessage('✅ Login exitoso en Winamax');
     }
   } else if (message.action === 'betResult') {
-    const result = message.success
-      ? `✅ Apuesta procesada exitosamente: ${
-          message.amount || botConfig.defaultBetAmount
-        }€`
-      : `⚠️ Error en apuesta: ${message.error || 'Error desconocido'}`;
-
-    sendLogToPopup(result);
-
-    // Respuesta específica para arbitraje
+    // Solo procesar mensajes de betResult aquí si no tienen messageId específico
+    // Los mensajes con messageId específico son manejados por el listener en processArbitrageMessage
     if (
-      message.messageId &&
-      !message.messageId.toString().startsWith('manual_')
+      !message.messageId ||
+      message.messageId.toString().startsWith('manual_')
     ) {
-      const telegramResponse = message.success
-        ? `✅ Arbitraje ejecutado: ${
+      const result = message.success
+        ? `✅ Apuesta procesada exitosamente: ${
             message.amount || botConfig.defaultBetAmount
           }€`
-        : `❌ Arbitraje falló: ${message.error || 'Error desconocido'}`;
+        : `⚠️ Error en apuesta: ${message.error || 'Error desconocido'}`;
 
-      sendTelegramMessage(telegramResponse, message.messageId);
+      sendLogToPopup(result);
+
+      // Solo para apuestas manuales
+      if (
+        message.messageId &&
+        message.messageId.toString().startsWith('manual_')
+      ) {
+        sendLogToPopup('✅ Apuesta manual completada');
+      }
     }
-
-    sendLogToPopup('✅ Mensaje procesado. Continuando con cola...');
+    // Los mensajes de arbitraje con messageId específico son manejados por processArbitrageMessage
   } else if (message.action === 'contentReady') {
     sendLogToPopup(
       `📱 Content script listo en: ${message.url || 'página desconocida'}`,

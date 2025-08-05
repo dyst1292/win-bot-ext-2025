@@ -1,21 +1,13 @@
-// content.js - Sistema avanzado de arbitraje para Winamax
+// content.js - Sistema de arbitraje para Winamax
 console.log('🎰 Winamax Bot Content Script cargado en:', window.location.href);
 
-// Variables globales para el estado
-let loginState = {
-  isWaitingForManualLogin: false,
-  credentials: null,
-  checkInterval: null,
-};
-
-// Variables para arbitraje
+// Variables globales
 let arbitrageState = {
   currentBet: null,
-  searchTimeout: null,
   isSearching: false,
 };
 
-// Esperar a que la página esté completamente cargada
+// Inicializar cuando la página esté lista
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initializeContentScript);
 } else {
@@ -23,973 +15,646 @@ if (document.readyState === 'loading') {
 }
 
 function initializeContentScript() {
-  console.log('🚀 Inicializando content script para Winamax...');
+  console.log('🚀 Inicializando content script...');
 
-  // Indicar que el content script está listo
+  // Notificar que está listo
   setTimeout(() => {
     chrome.runtime
       .sendMessage({
         action: 'contentReady',
         url: window.location.href,
-        timestamp: Date.now(),
       })
-      .catch((error) => {
-        console.log('Background script no disponible:', error);
-      });
+      .catch(() => {});
   }, 1000);
 }
 
 // Función principal para procesar apuestas de arbitraje
 async function processArbitrageBet(betData) {
   try {
-    logWithTimestamp('🎯 Procesando apuesta de arbitraje...', 'INFO');
-    logWithTimestamp(`📊 Datos: ${JSON.stringify(betData)}`, 'INFO');
+    logMessage('🎯 Procesando apuesta de arbitraje...', 'INFO');
+    logMessage(`📊 Tipo: ${betData.betType}`, 'INFO');
+    logMessage(`🎾 Pick: ${betData.pick}`, 'INFO');
+    logMessage(`💰 Cuota objetivo: ${betData.targetOdds}`, 'INFO');
 
     const currentUrl = window.location.href.toLowerCase();
 
-    // Si ya estamos en la página del evento, procesar directamente
-    if (currentUrl.includes('winamax.es/apuestas-deportivas/match/')) {
-      logWithTimestamp(
-        '✅ Ya estamos en página de evento, procesando...',
-        'SUCCESS',
-      );
-      await processEventPage(betData);
-    } else {
-      logWithTimestamp('❌ No estamos en una página de evento válida', 'ERROR');
-      chrome.runtime.sendMessage({
-        action: 'betResult',
-        success: false,
-        error: 'No estamos en página de evento de Winamax',
-        messageId: betData.messageId,
-      });
+    if (!currentUrl.includes('winamax.es/apuestas-deportivas/match/')) {
+      throw new Error('No estamos en una página de evento de Winamax');
     }
-  } catch (error) {
-    logWithTimestamp(
-      `❌ Error procesando arbitraje: ${error.message}`,
-      'ERROR',
-    );
-    chrome.runtime.sendMessage({
-      action: 'betResult',
-      success: false,
-      error: error.message,
-      messageId: betData.messageId,
-    });
-  }
-}
 
-// Procesar página de evento específico
-async function processEventPage(betData) {
-  try {
-    logWithTimestamp('🔍 Analizando página de evento...', 'INFO');
-
-    // Esperar a que cargue completamente
+    // Esperar a que cargue la página
     await wait(3000);
 
-    // Primero, navegar a la sección correcta
-    await navigateToCorrectSection(betData.pick);
-
-    // Buscar la apuesta específica
-    const foundBet = await searchForSpecificBet(betData);
-
-    if (foundBet) {
-      logWithTimestamp(
-        `✅ Apuesta encontrada: ${foundBet.description}`,
-        'SUCCESS',
-      );
-      logWithTimestamp(
-        `💰 Cuota encontrada: ${foundBet.odds} (mínima: ${betData.targetOdds})`,
-        'INFO',
-      );
-
-      // Verificar si la cuota es válida
-      if (foundBet.odds >= betData.targetOdds) {
-        logWithTimestamp(
-          '✅ Cuota válida, procediendo con la apuesta...',
-          'SUCCESS',
-        );
-        await placeBetOnElement(foundBet.element, betData.amount);
-      } else {
-        logWithTimestamp(
-          `❌ Cuota insuficiente: ${foundBet.odds} < ${betData.targetOdds}`,
-          'ERROR',
-        );
-        chrome.runtime.sendMessage({
-          action: 'betResult',
-          success: false,
-          error: `Cuota insuficiente: ${foundBet.odds} < ${betData.targetOdds}`,
-          messageId: betData.messageId,
-        });
-      }
+    if (betData.betType === 'TENNIS_MONEYLINE') {
+      await processTennisMoneyline(betData);
     } else {
-      logWithTimestamp('❌ Apuesta no encontrada en la página', 'ERROR');
-      chrome.runtime.sendMessage({
-        action: 'betResult',
-        success: false,
-        error: 'Apuesta específica no encontrada',
-        messageId: betData.messageId,
-      });
+      await processOtherSports(betData);
     }
   } catch (error) {
-    throw new Error(`Error en página de evento: ${error.message}`);
+    logMessage(`❌ Error procesando arbitraje: ${error.message}`, 'ERROR');
+    sendBetResult(false, error.message, betData.messageId);
   }
 }
 
-// Navegar automáticamente a la sección correcta (actualizado para expansión)
-async function navigateToCorrectSection(pick) {
+// Procesar TENNIS MONEYLINE
+async function processTennisMoneyline(betData) {
   try {
-    logWithTimestamp(
-      `🧭 Determinando sección correcta para: "${pick}"`,
-      'INFO',
+    logMessage('🎾 Procesando TENNIS MONEYLINE...', 'INFO');
+
+    // Paso 1: Buscar sección de resultado
+    const resultSectionFound = await navigateToCorrectSubmenu(
+      'TENNIS_MONEYLINE',
     );
 
-    // Detectar tipo de apuesta basado en el pick
-    const sectionMap = detectBetSection(pick);
-
-    logWithTimestamp(
-      `🎯 Sección objetivo: "${sectionMap.section}" (${sectionMap.keywords.join(
-        ', ',
-      )})`,
-      'INFO',
-    );
-
-    // Buscar y hacer click en la pestaña correcta
-    const success = await clickCorrectTab(sectionMap);
-
-    if (success) {
-      logWithTimestamp('✅ Navegación a sección completada', 'SUCCESS');
-      await wait(3000); // Esperar a que carguen las apuestas de la sección
-
-      // Intentar expandir las opciones si hay botón "Más selecciones"
-      await expandAllOptions();
-
-      // Cambiar vista a tabla si está disponible
-      await switchToTableView();
-    } else {
-      logWithTimestamp(
-        '⚠️ No se pudo navegar a sección específica, buscando en todas',
+    if (!resultSectionFound) {
+      logMessage(
+        '⚠️ No se encontró sección específica, buscando en toda la página',
         'WARN',
       );
-
-      // Intentar expandir opciones en la sección actual
-      await expandAllOptions();
-      await switchToTableView();
-    }
-  } catch (error) {
-    logWithTimestamp(`⚠️ Error navegando a sección: ${error.message}`, 'WARN');
-    // Continuar sin error, buscar en la sección actual
-    await expandAllOptions();
-    await switchToTableView();
-  }
-}
-
-// Expandir todas las opciones disponibles
-async function expandAllOptions() {
-  try {
-    logWithTimestamp(
-      '🔍 Buscando botones "Más selecciones" para expandir...',
-      'INFO',
-    );
-
-    // Buscar botones de expansión específicos
-    const expandButtons = document.querySelectorAll(
-      '.expand-button, [class*="expand"], .sc-ePamRd.eobNuT, .sc-hOpgDU',
-    );
-
-    logWithTimestamp(
-      `📋 Encontrados ${expandButtons.length} posibles botones de expansión`,
-      'INFO',
-    );
-
-    let expandedCount = 0;
-
-    for (const button of expandButtons) {
-      const buttonText = button.textContent?.trim().toLowerCase() || '';
-
-      // Verificar si es un botón de "Más selecciones"
-      if (
-        buttonText.includes('más') ||
-        buttonText.includes('more') ||
-        buttonText.includes('selecciones') ||
-        buttonText.includes('options')
-      ) {
-        logWithTimestamp(`✅ Expandiendo: "${buttonText}"`, 'SUCCESS');
-
-        await humanClick(button);
-        await wait(2000); // Esperar a que se expanda
-        expandedCount++;
-      }
     }
 
-    if (expandedCount > 0) {
-      logWithTimestamp(
-        `✅ Se expandieron ${expandedCount} secciones`,
-        'SUCCESS',
-      );
-    } else {
-      logWithTimestamp('ℹ️ No se encontraron secciones para expandir', 'INFO');
-    }
-  } catch (error) {
-    logWithTimestamp(`⚠️ Error expandiendo opciones: ${error.message}`, 'WARN');
-  }
-}
+    // Paso 2: Buscar al jugador
+    const playerBet = await findTennisPlayer(betData.pick, betData.targetOdds);
 
-// Cambiar a vista de tabla si está disponible
-async function switchToTableView() {
-  try {
-    logWithTimestamp('🔍 Buscando botón de vista de tabla...', 'INFO');
+    if (playerBet) {
+      logMessage(`✅ Jugador encontrado: ${playerBet.description}`, 'SUCCESS');
+      logMessage(`💰 Cuota: ${playerBet.odds}`, 'INFO');
 
-    // Buscar botones de cambio de vista (iconos de tabla/lista)
-    const viewButtons = document.querySelectorAll(
-      '.tabs-wrapper svg, [class*="tabs"] svg, [class*="view"] button, .sc-fDpJdc button',
-    );
-
-    for (const button of viewButtons) {
-      const parent = button.closest('button, .sc-bXxnNr, [class*="tab"]');
-      if (
-        parent &&
-        !parent.classList.contains('selected') &&
-        !parent.classList.contains('active')
-      ) {
-        // Buscar el icono de tabla (rectángulos)
-        const hasTableIcon =
-          button.querySelector('rect') ||
-          button.textContent?.includes('tabla') ||
-          button.getAttribute('class')?.includes('table');
-
-        if (hasTableIcon) {
-          logWithTimestamp('✅ Cambiando a vista de tabla...', 'SUCCESS');
-          await humanClick(parent);
-          await wait(2000);
-          break;
-        }
-      }
-    }
-  } catch (error) {
-    logWithTimestamp(`⚠️ Error cambiando vista: ${error.message}`, 'WARN');
-  }
-}
-
-// Detectar qué sección de apuestas necesitamos (actualizado para 3 tipos principales)
-function detectBetSection(pick) {
-  const pickLower = pick.toLowerCase();
-
-  // Mapear los 3 tipos principales de apuesta deportiva a secciones de Winamax
-  const sectionMapping = [
-    // === TOTALS (Over/Under) ===
-    {
-      section: '1ª mitad - Número total de goles',
-      keywords: [
-        '1ª mitad',
-        'primera mitad',
-        'half time',
-        'ht',
-        'over',
-        'under',
-        'total',
-      ],
-      patterns: [
-        /over.*\d+\.5.*first/i,
-        /under.*\d+\.5.*first/i,
-        /over.*\d+\.5.*1.*mitad/i,
-        /over.*\d+\.5.*half/i,
-      ],
-      priority: 25,
-      aliases: [
-        '1ª mitad - Número total de goles',
-        '1ª mitad - Total de goles',
-        'Primera mitad - Total',
-      ],
-      type: 'TOTALS',
-    },
-    {
-      section: 'Número total de goles',
-      keywords: ['over', 'under', 'total', 'más', 'menos', 'número'],
-      patterns: [
-        /over\s+\d+\.5/i,
-        /under\s+\d+\.5/i,
-        /más de\s+\d+/i,
-        /menos de\s+\d+/i,
-        /total.*\d+/i,
-      ],
-      priority: 23,
-      aliases: ['Total de goles', 'Número total de goles', 'Total de puntos'],
-      type: 'TOTALS',
-    },
-
-    // === SPREADS (Handicaps) ===
-    {
-      section: '1ª mitad - Hándicap asiático',
-      keywords: [
-        '1ª mitad',
-        'primera mitad',
-        'half',
-        'ht',
-        'hándicap',
-        'handicap',
-        'spread',
-      ],
-      patterns: [
-        /.*[+-]\d+\.5.*first/i,
-        /.*[+-]\d+\.5.*half/i,
-        /.*[+-]\d+\.5.*1.*mitad/i,
-      ],
-      priority: 22,
-      aliases: [
-        '1ª mitad - Hándicap asiático (handicap)',
-        '1ª mitad - Handicap asiático',
-      ],
-      type: 'SPREADS',
-    },
-    {
-      section: 'Hándicap asiático',
-      keywords: ['hándicap', 'handicap', 'asiático', 'spread'],
-      patterns: [/.*[+-]\d+\.5/i, /.*[+-]\d+$/i, /spread/i],
-      priority: 20,
-      aliases: ['Hándicap asiático (handicap)', 'Handicap asiático'],
-      type: 'SPREADS',
-    },
-    {
-      section: 'Diferencia de goles',
-      keywords: ['diferencia', 'goles', 'margen', 'spread'],
-      patterns: [/diferencia/i, /margen/i, /spread/i],
-      priority: 18,
-      aliases: ['Margen de victoria', 'Diferencia de goles'],
-      type: 'SPREADS',
-    },
-
-    // === MONEYLINE (Resultado directo) ===
-    {
-      section: 'Resultado',
-      keywords: ['resultado', 'ganador', 'winner', 'moneyline', '1x2'],
-      patterns: [
-        /ganador/i,
-        /winner/i,
-        /resultado/i,
-        /moneyline/i,
-        /^(1|x|2)$/,
-      ],
-      priority: 15,
-      aliases: ['Resultado final', '1X2', 'Ganador del partido'],
-      type: 'MONEYLINE',
-    },
-
-    // === OTROS TIPOS ===
-    {
-      section: 'Hándicap texto',
-      keywords: ['hándicap', 'texto', 'al menos'],
-      patterns: [/al menos/i, /gana por/i],
-      priority: 12,
-      aliases: ['Hándicap texto'],
-      type: 'SPREADS',
-    },
-  ];
-
-  // Calcular puntuaciones para cada sección
-  let bestMatch = {
-    section: 'Resultado', // Por defecto
-    keywords: ['resultado'],
-    score: 0,
-    aliases: ['Resultado final'],
-    type: 'MONEYLINE',
-  };
-
-  for (const mapping of sectionMapping) {
-    let score = 0;
-
-    // Puntos por palabras clave
-    for (const keyword of mapping.keywords) {
-      if (pickLower.includes(keyword)) {
-        score += 3;
-      }
-    }
-
-    // Puntos por patrones
-    for (const pattern of mapping.patterns) {
-      if (pattern.test(pick)) {
-        score += mapping.priority;
-      }
-    }
-
-    // === BONUS ESPECÍFICOS POR TIPO ===
-
-    // TOTALS: Over/Under con números
-    if (mapping.type === 'TOTALS') {
-      if (
-        pickLower.includes('over') ||
-        pickLower.includes('under') ||
-        pickLower.includes('más') ||
-        pickLower.includes('menos')
-      ) {
-        score += 15;
-
-        // Extra bonus para totales con decimales
-        if (pick.match(/\d+\.5/)) {
-          score += 10;
-        }
-
-        // Extra bonus para primera mitad
-        if (
-          pickLower.includes('first') ||
-          pickLower.includes('half') ||
-          pickLower.includes('mitad') ||
-          pickLower.includes('ht')
-        ) {
-          score += 8;
-        }
-      }
-    }
-
-    // SPREADS: Handicaps con +/-
-    if (mapping.type === 'SPREADS') {
-      if (pick.match(/[+-]\d+\.?\d*/)) {
-        score += 12;
-
-        // Extra bonus para spreads con decimales (.5)
-        if (pick.match(/[+-]\d+\.5/)) {
-          score += 8;
-        }
-
-        // Extra bonus para primera mitad
-        if (
-          pickLower.includes('first') ||
-          pickLower.includes('half') ||
-          pickLower.includes('mitad')
-        ) {
-          score += 6;
-        }
-      }
-    }
-
-    // MONEYLINE: Nombres de equipos sin números
-    if (mapping.type === 'MONEYLINE') {
-      // Si no tiene números de spread o total, probablemente es moneyline
-      if (
-        !pick.match(/[+-]?\d+\.?\d*/) &&
-        !pickLower.includes('over') &&
-        !pickLower.includes('under') &&
-        !pickLower.includes('total')
-      ) {
-        score += 10;
-      }
-    }
-
-    if (score > bestMatch.score) {
-      bestMatch = {
-        section: mapping.section,
-        keywords: mapping.keywords,
-        score: score,
-        aliases: mapping.aliases || [mapping.section],
-        type: mapping.type,
-      };
-    }
-  }
-
-  logWithTimestamp(
-    `🎯 Tipo detectado: ${bestMatch.type} → "${bestMatch.section}" (puntuación: ${bestMatch.score})`,
-    'INFO',
-  );
-
-  return bestMatch;
-}
-
-// Hacer click en la pestaña correcta (mejorado para Winamax)
-async function clickCorrectTab(sectionMap) {
-  try {
-    logWithTimestamp(`🖱️ Buscando pestaña: "${sectionMap.section}"`, 'INFO');
-
-    // Buscar pestañas/filtros específicos de Winamax
-    const filterButtons = document.querySelectorAll(
-      '.filter-button, .sc-bJoeBu, [class*="filter"], [class*="tab"], [class*="section"]',
-    );
-
-    logWithTimestamp(
-      `📋 Encontradas ${filterButtons.length} pestañas disponibles`,
-      'INFO',
-    );
-
-    let bestMatch = null;
-    let bestScore = 0;
-
-    // Incluir aliases en la búsqueda
-    const searchTerms = [
-      sectionMap.section,
-      ...(sectionMap.aliases || []),
-      ...sectionMap.keywords,
-    ];
-
-    for (const button of filterButtons) {
-      const buttonText = button.textContent?.trim().toLowerCase() || '';
-
-      // Calcular similitud con la sección objetivo
-      let score = 0;
-
-      // Buscar coincidencias con términos de búsqueda
-      for (const term of searchTerms) {
-        const termLower = term.toLowerCase();
-
-        // Coincidencia exacta (alta puntuación)
-        if (buttonText === termLower) {
-          score += 20;
-        }
-        // Contiene el término completo
-        else if (buttonText.includes(termLower)) {
-          score += 15;
-        }
-        // Coincidencias parciales de palabras
-        else {
-          const termWords = termLower.split(' ');
-          const buttonWords = buttonText.split(' ');
-
-          for (const termWord of termWords) {
-            if (termWord.length > 3) {
-              // Solo palabras significativas
-              for (const buttonWord of buttonWords) {
-                if (
-                  buttonWord.includes(termWord) ||
-                  termWord.includes(buttonWord)
-                ) {
-                  score += 5;
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Logging para debug
-      if (score > 0) {
-        logWithTimestamp(
-          `🎯 Candidato: "${buttonText}" (puntuación: ${score})`,
-          'INFO',
+      if (playerBet.odds >= betData.targetOdds) {
+        logMessage('✅ Cuota válida, realizando apuesta...', 'SUCCESS');
+        await executeBet(playerBet.element, betData.amount, betData.messageId);
+      } else {
+        throw new Error(
+          `Cuota insuficiente: ${playerBet.odds} < ${betData.targetOdds}`,
         );
       }
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = button;
-      }
-    }
-
-    if (bestMatch && bestScore >= 5) {
-      const tabText = bestMatch.textContent?.trim();
-      logWithTimestamp(
-        `✅ Haciendo click en pestaña: "${tabText}" (puntuación: ${bestScore})`,
-        'SUCCESS',
-      );
-
-      await humanClick(bestMatch);
-      await wait(3000); // Más tiempo para que cargue la sección
-
-      return true;
     } else {
-      logWithTimestamp('❌ No se encontró pestaña compatible', 'ERROR');
-
-      // Listar todas las pestañas disponibles para debug
-      logWithTimestamp('📋 Pestañas disponibles:', 'INFO');
-      filterButtons.forEach((button, index) => {
-        const text = button.textContent?.trim();
-        if (text && text.length > 0) {
-          logWithTimestamp(`  ${index + 1}. "${text}"`, 'INFO');
-        }
-      });
-
-      return false;
+      throw new Error(`Jugador "${betData.pick}" no encontrado`);
     }
   } catch (error) {
-    logWithTimestamp(
-      `❌ Error haciendo click en pestaña: ${error.message}`,
-      'ERROR',
-    );
-    return false;
-  }
-}
-
-// Buscar apuesta específica en la página
-async function searchForSpecificBet(betData) {
-  try {
-    logWithTimestamp(
-      `🔍 Buscando: "${betData.pick}" con cuota mínima ${betData.targetOdds}`,
-      'INFO',
-    );
-
-    arbitrageState.isSearching = true;
-
-    // Estrategias de búsqueda múltiples (en orden de prioridad)
-    const searchStrategies = [
-      () => searchByExactText(betData.pick),
-      () => searchBySpreadPattern(betData.pick),
-      () => searchByTeamAndHandicap(betData.pick),
-      () => searchByPartialText(betData.pick),
-      () => searchInCurrentSection(betData.pick),
-      () => searchByAlternativePatterns(betData.pick),
-    ];
-
-    for (let i = 0; i < searchStrategies.length; i++) {
-      logWithTimestamp(
-        `🔄 Estrategia de búsqueda ${i + 1}/${searchStrategies.length}...`,
-        'INFO',
-      );
-
-      const result = await searchStrategies[i]();
-      if (result && result.odds) {
-        arbitrageState.isSearching = false;
-        logWithTimestamp(
-          `✅ Encontrado con estrategia ${i + 1}: ${result.method}`,
-          'SUCCESS',
-        );
-        return result;
-      }
-
-      await wait(1000);
-    }
-
-    arbitrageState.isSearching = false;
-    return null;
-  } catch (error) {
-    arbitrageState.isSearching = false;
     throw error;
   }
 }
 
-// Buscar en la sección actual específicamente
-async function searchInCurrentSection(pick) {
-  logWithTimestamp(
-    `🎯 Búsqueda específica en sección actual: "${pick}"`,
-    'INFO',
-  );
+// Navegar a sección de resultado
+async function navigateToResultSection() {
+  // Esta función se mantiene para compatibilidad, pero ahora usa la nueva función
+  return await navigateToCorrectSubmenu('TENNIS_MONEYLINE');
+}
 
-  // Buscar elementos de apuesta visibles en la sección actual
-  const betElements = document.querySelectorAll(
-    'button[class*="odd"], button[class*="bet"], [class*="market"] button, [class*="selection"] button, .sc-iHbSHJ button',
-  );
+// Expandir secciones
+async function expandSections() {
+  try {
+    const expandButtons = document.querySelectorAll(
+      ['[class*="expand"]', '[class*="more"]', '[data-testid*="more"]'].join(
+        ', ',
+      ),
+    );
 
-  logWithTimestamp(
-    `🎲 Elementos de apuesta encontrados: ${betElements.length}`,
-    'INFO',
-  );
+    for (const button of expandButtons) {
+      const text = button.textContent?.trim().toLowerCase() || '';
+      if (
+        text.includes('más') ||
+        text.includes('more') ||
+        text.includes('ver')
+      ) {
+        logMessage(`✅ Expandiendo: "${text}"`, 'SUCCESS');
+        await clickElement(button);
+        await wait(1000);
+      }
+    }
+  } catch (error) {
+    logMessage(`⚠️ Error expandiendo: ${error.message}`, 'WARN');
+  }
+}
 
-  const candidates = [];
+// Buscar jugador de tenis
+async function findTennisPlayer(playerName, minOdds) {
+  try {
+    logMessage(`🔍 Buscando jugador: "${playerName}"`, 'INFO');
 
-  for (const element of betElements) {
-    // Verificar si el elemento es visible y usable
-    if (!isElementUsable(element)) continue;
+    const normalizedName = playerName.toUpperCase().trim();
+    const nameWords = normalizedName.split(/\s+/);
 
-    const elementText = element.textContent?.trim() || '';
-    const parentText =
-      element
-        .closest(
-          '[class*="market"], [class*="bet-group"], [class*="selection"]',
-        )
-        ?.textContent?.trim() || '';
-    const contextText = `${elementText} ${parentText}`.toLowerCase();
+    logMessage(`🔑 Palabras clave: ${nameWords.join(', ')}`, 'INFO');
 
-    // Calcular similitud
-    const similarity = calculateTextSimilarity(pick.toLowerCase(), contextText);
+    // Buscar elementos de apuesta
+    const betElements = document.querySelectorAll(
+      [
+        'button[class*="odd"]',
+        'button[class*="bet"]',
+        '[class*="market"] button',
+        '[class*="selection"] button',
+        '[data-testid*="selection"] button',
+        '.sc-iHbSHJ button',
+      ].join(', '),
+    );
 
-    if (similarity > 0.3) {
-      // Umbral de similitud
-      const odds = extractOddsFromElement(element);
-      if (odds) {
+    logMessage(`🎲 Elementos encontrados: ${betElements.length}`, 'INFO');
+
+    const candidates = [];
+
+    for (const element of betElements) {
+      if (!isElementUsable(element)) continue;
+
+      const elementText = element.textContent?.trim() || '';
+      const odds = extractOdds(element);
+
+      if (!odds || odds < 1.01 || odds > 50) continue;
+
+      // Calcular similitud con el nombre del jugador
+      const similarity = calculateSimilarity(
+        normalizedName,
+        elementText.toUpperCase(),
+        nameWords,
+      );
+
+      if (similarity > 0.4) {
         candidates.push({
           element: element,
           odds: odds,
           description: elementText,
           similarity: similarity,
-          context: parentText,
-          method: 'current_section',
         });
+
+        logMessage(
+          `🎾 Candidato: "${elementText}" - Cuota: ${odds} - Similitud: ${similarity.toFixed(
+            2,
+          )}`,
+          'INFO',
+        );
       }
     }
+
+    // Ordenar por similitud
+    candidates.sort((a, b) => b.similarity - a.similarity);
+
+    if (candidates.length > 0) {
+      logMessage(
+        `✅ Mejor candidato: "${candidates[0].description}"`,
+        'SUCCESS',
+      );
+      return candidates[0];
+    }
+
+    return null;
+  } catch (error) {
+    logMessage(`❌ Error buscando jugador: ${error.message}`, 'ERROR');
+    return null;
   }
-
-  // Ordenar por similitud
-  candidates.sort((a, b) => b.similarity - a.similarity);
-
-  if (candidates.length > 0) {
-    logWithTimestamp(
-      `✅ ${
-        candidates.length
-      } candidatos en sección, mejor similitud: ${candidates[0].similarity.toFixed(
-        2,
-      )}`,
-      'SUCCESS',
-    );
-    logWithTimestamp(
-      `🎯 Mejor candidato: "${candidates[0].description}"`,
-      'INFO',
-    );
-    return candidates[0];
-  }
-
-  return null;
 }
 
-// Calcular similitud entre textos
-function calculateTextSimilarity(text1, text2) {
-  const words1 = text1.toLowerCase().split(/\s+/);
-  const words2 = text2.toLowerCase().split(/\s+/);
+// Calcular similitud entre nombres
+function calculateSimilarity(targetName, elementText, nameWords) {
+  let score = 0;
 
+  // Coincidencia exacta
+  if (elementText.includes(targetName)) {
+    return 1.0;
+  }
+
+  // Coincidencias por palabras
+  const elementWords = elementText.split(/\s+/);
   let matches = 0;
 
-  for (const word1 of words1) {
-    if (word1.length > 2) {
-      // Ignorar palabras muy cortas
-      for (const word2 of words2) {
-        if (word2.includes(word1) || word1.includes(word2)) {
-          matches++;
-          break;
+  for (const nameWord of nameWords) {
+    if (nameWord.length < 3) continue;
+
+    for (const elementWord of elementWords) {
+      if (elementWord === nameWord) {
+        matches += 1;
+        score += 0.5;
+      } else if (
+        elementWord.includes(nameWord) ||
+        nameWord.includes(elementWord)
+      ) {
+        if (Math.abs(elementWord.length - nameWord.length) <= 2) {
+          matches += 0.7;
+          score += 0.3;
         }
       }
     }
   }
 
-  return matches / Math.max(words1.length, words2.length);
-}
-
-// Búsqueda por texto exacto
-async function searchByExactText(pick) {
-  logWithTimestamp(`🎯 Búsqueda exacta: "${pick}"`, 'INFO');
-
-  const allButtons = document.querySelectorAll(
-    'button, .bet-button, [class*="odd"], [class*="bet"]',
-  );
-
-  for (const button of allButtons) {
-    const text = button.textContent?.trim() || '';
-    const parent = button.closest(
-      '[class*="bet"], [class*="odd"], [class*="market"]',
-    );
-    const context = parent?.textContent?.trim() || '';
-
-    if (text.includes(pick) || context.includes(pick)) {
-      const odds = extractOddsFromElement(button);
-      if (odds) {
-        return {
-          element: button,
-          odds: odds,
-          description: text || context,
-          method: 'exact_text',
-        };
-      }
-    }
+  // Bonus por múltiples coincidencias
+  if (matches >= 1.5 && nameWords.length >= 2) {
+    score += 0.2;
   }
 
-  return null;
+  return Math.min(score, 1.0);
 }
 
-// Búsqueda por texto parcial
-async function searchByPartialText(pick) {
-  logWithTimestamp(`🎯 Búsqueda parcial: "${pick}"`, 'INFO');
+// Procesar otros deportes (mantener lógica original)
+async function processOtherSports(betData) {
+  try {
+    logMessage(`⚽ Procesando ${betData.betType}...`, 'INFO');
 
-  // Extraer palabras clave del pick
-  const keywords = extractKeywords(pick);
-  logWithTimestamp(`🔑 Palabras clave: ${keywords.join(', ')}`, 'INFO');
+    // Navegar al submenú correcto según el tipo de apuesta
+    const submenuFound = await navigateToCorrectSubmenu(betData.betType);
 
-  const allElements = document.querySelectorAll('*');
-  const candidates = [];
+    if (!submenuFound) {
+      logMessage(
+        '⚠️ No se encontró submenú específico, buscando en toda la página',
+        'WARN',
+      );
+    }
 
-  for (const element of allElements) {
-    const text = element.textContent?.trim() || '';
-    if (text.length > 0 && text.length < 200) {
-      // Evitar textos muy largos
-      const matchCount = keywords.filter((keyword) =>
-        text.toLowerCase().includes(keyword.toLowerCase()),
-      ).length;
+    // Buscar la apuesta específica
+    const foundBet = await searchSpecificBet(betData.pick);
 
-      if (matchCount >= 2) {
-        // Al menos 2 palabras clave coinciden
-        const odds = extractOddsFromElement(element);
-        if (odds) {
-          candidates.push({
-            element: element,
-            odds: odds,
-            description: text,
-            matchCount: matchCount,
-            method: 'partial_text',
-          });
+    if (foundBet && foundBet.odds >= betData.targetOdds) {
+      await executeBet(foundBet.element, betData.amount, betData.messageId);
+    } else {
+      throw new Error('Apuesta no encontrada o cuota insuficiente');
+    }
+  } catch (error) {
+    throw error;
+  }
+}
+
+// Navegar al submenú correcto según el tipo de apuesta
+async function navigateToCorrectSubmenu(betType) {
+  try {
+    logMessage(`🎯 Navegando a submenú para: ${betType}`, 'INFO');
+
+    // Mapeo de tipos de apuesta a submenús
+    const submenuMapping = {
+      TENNIS_MONEYLINE: [
+        'resultado',
+        'ganador',
+        'winner',
+        'match winner',
+        'vencedor',
+      ],
+      SPREADS: [
+        'diferencia de goles',
+        'handicap',
+        'spread',
+        'hándicap',
+        'diferencia',
+      ],
+      FOOTBALL_SPREAD: [
+        'diferencia de goles',
+        'handicap',
+        'spread',
+        'hándicap',
+        'diferencia',
+      ],
+      BASKETBALL_SPREAD: [
+        'diferencia de puntos',
+        'handicap',
+        'spread',
+        'hándicap',
+        'diferencia',
+      ],
+      TOTALS: ['total de goles', 'total', 'over/under', 'más/menos'],
+      MONEYLINE: ['resultado', 'ganador', 'winner', '1x2'],
+    };
+
+    // Obtener términos de búsqueda para este tipo
+    const searchTerms = submenuMapping[betType] || ['resultado'];
+
+    logMessage(`🔍 Buscando submenús: ${searchTerms.join(', ')}`, 'INFO');
+
+    // Selectores específicos para los botones de filtro de Winamax
+    const filterButtons = document.querySelectorAll(
+      [
+        '.filter-button',
+        '.sc-gplwa-d',
+        'div[class*="filter-button"]',
+        'div[data-testid*="filter"]',
+        'button[data-testid*="filter"]',
+      ].join(', '),
+    );
+
+    logMessage(
+      `📋 Encontrados ${filterButtons.length} botones de filtro`,
+      'INFO',
+    );
+
+    // Filtrar solo elementos que realmente son botones de filtro
+    const validFilterButtons = Array.from(filterButtons).filter((button) => {
+      const text = button.textContent?.trim() || '';
+      // Excluir elementos que claramente no son botones de filtro
+      return (
+        text.length > 0 &&
+        text.length < 100 &&
+        !text.includes('video-js') &&
+        !text.includes('{') &&
+        !text.includes('width:') &&
+        !text.includes('px')
+      );
+    });
+
+    logMessage(
+      `📋 Botones válidos filtrados: ${validFilterButtons.length}`,
+      'INFO',
+    );
+
+    // Buscar el submenú correcto
+    for (const button of validFilterButtons) {
+      const buttonText = button.textContent?.trim().toLowerCase() || '';
+
+      logMessage(`🔍 Revisando botón: "${buttonText}"`, 'INFO');
+
+      for (const term of searchTerms) {
+        if (buttonText.includes(term.toLowerCase())) {
+          logMessage(
+            `✅ Submenú encontrado: "${buttonText}" - Haciendo click...`,
+            'SUCCESS',
+          );
+
+          // Scroll al elemento antes de hacer click
+          button.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          await wait(500);
+
+          await clickElement(button);
+          await wait(3000); // Más tiempo para que cargue el contenido
+          await expandSections();
+          return true;
         }
       }
     }
+
+    // Listar todos los botones válidos para debug
+    logMessage('📋 Botones disponibles:', 'INFO');
+    validFilterButtons.forEach((button, index) => {
+      const text = button.textContent?.trim();
+      if (text && text.length > 0) {
+        logMessage(`  ${index + 1}. "${text}"`, 'INFO');
+      }
+    });
+
+    // Si no encuentra submenú específico, expandir las secciones actuales
+    logMessage('❌ No se encontró submenú específico', 'WARN');
+    await expandSections();
+    return false;
+  } catch (error) {
+    logMessage(`⚠️ Error navegando a submenú: ${error.message}`, 'WARN');
+    await expandSections();
+    return false;
   }
-
-  // Ordenar por número de coincidencias
-  candidates.sort((a, b) => b.matchCount - a.matchCount);
-
-  if (candidates.length > 0) {
-    logWithTimestamp(
-      `✅ ${candidates.length} candidatos encontrados, mejor: ${candidates[0].description}`,
-      'SUCCESS',
-    );
-    return candidates[0];
-  }
-
-  return null;
 }
 
-// Búsqueda por patrones de spread/handicap
-async function searchBySpreadPattern(pick) {
-  logWithTimestamp(`🎯 Búsqueda por spread: "${pick}"`, 'INFO');
+// Buscar apuesta específica (para otros deportes) MEJORADO
+async function searchSpecificBet(pick) {
+  try {
+    logMessage(`🔍 Buscando apuesta: "${pick}"`, 'INFO');
 
-  // Extraer información del spread (ej: "CRYSTAL PALACE -0.5")
-  const spreadMatch = pick.match(/(.+?)\s*([+-]?\d+\.?\d*)/);
-  if (!spreadMatch) return null;
+    // Selectores más específicos para elementos de apuesta
+    const betElements = document.querySelectorAll(
+      [
+        'button[class*="odd"]:not([class*="video"])',
+        'button[class*="bet"]:not([class*="video"])',
+        'div[class*="market"] button',
+        'div[class*="selection"] button',
+        'button[data-testid*="selection"]',
+        'button[data-testid*="odd"]',
+        '.sc-iHbSHJ button',
+        '.sc-meaPv button', // Clase específica del HTML que mostraste
+        '.odd-button-wrapper button',
+      ].join(', '),
+    );
 
-  const team = spreadMatch[1].trim();
-  const spread = spreadMatch[2];
+    // Filtrar elementos que realmente contienen cuotas
+    const validBetElements = Array.from(betElements).filter((element) => {
+      const text = element.textContent?.trim() || '';
+      const odds = extractOdds(element);
 
-  logWithTimestamp(`🏈 Equipo: "${team}", Spread: "${spread}"`, 'INFO');
+      return (
+        text.length > 0 &&
+        text.length < 200 &&
+        !text.includes('video-js') &&
+        !text.includes('{') &&
+        !text.includes('width:') &&
+        odds !== null
+      );
+    });
 
-  // Buscar elementos que contengan el equipo y el spread
-  const allElements = document.querySelectorAll('*');
+    logMessage(`🎲 Elementos encontrados: ${validBetElements.length}`, 'INFO');
 
-  for (const element of allElements) {
-    const text = element.textContent?.trim() || '';
+    // Mostrar algunos elementos para debug
+    if (validBetElements.length > 0) {
+      logMessage('📋 Primeros elementos encontrados:', 'INFO');
+      validBetElements.slice(0, 8).forEach((element, index) => {
+        const text = element.textContent?.trim() || '';
+        const odds = extractOdds(element);
+        logMessage(`  ${index + 1}. "${text}" - Cuota: ${odds}`, 'INFO');
+      });
+    }
 
-    // Verificar si contiene el equipo y el spread
-    const hasTeam = text.toLowerCase().includes(team.toLowerCase());
-    const hasSpread = text.includes(spread);
+    const candidates = [];
 
-    if (hasTeam && hasSpread) {
-      const odds = extractOddsFromElement(element);
-      if (odds) {
-        return {
+    for (const element of validBetElements) {
+      if (!isElementUsable(element)) continue;
+
+      const elementText = element.textContent?.trim() || '';
+      const odds = extractOdds(element);
+
+      if (!odds) continue;
+
+      let similarity = 0;
+      let matchType = '';
+
+      // Para SPREAD: buscar equipo + handicap (ej: "BRISBANE CITY -3.5")
+      if (pick.includes('-') || pick.includes('+')) {
+        const pickParts = pick.split(/\s+/);
+        const teamName = pickParts.slice(0, -1).join(' '); // Todos excepto último elemento
+        const handicap = pickParts[pickParts.length - 1]; // Último elemento
+
+        // Normalizar nombre del equipo
+        const normalizedTeamName = normalizeTeamName(teamName);
+        const normalizedElementText = normalizeTeamName(elementText);
+
+        logMessage(
+          `🔍 SPREAD - Comparando equipo: "${normalizedTeamName}" con "${normalizedElementText}" + handicap "${handicap}"`,
+          'INFO',
+        );
+
+        if (
+          normalizedElementText.includes(normalizedTeamName) &&
+          elementText.includes(handicap)
+        ) {
+          similarity = 1.0;
+          matchType = 'spread_exact';
+        } else if (normalizedElementText.includes(normalizedTeamName)) {
+          similarity = 0.7;
+          matchType = 'spread_team_only';
+        }
+      }
+      // Para MONEYLINE: buscar nombre del equipo (ej: "PAKHTAKOR TASHKENT")
+      else {
+        const normalizedPick = normalizeTeamName(pick);
+        const normalizedElementText = normalizeTeamName(elementText);
+        const pickWords = normalizedPick.split(/\s+/);
+
+        logMessage(
+          `🔍 MONEYLINE - Comparando: "${normalizedPick}" con "${normalizedElementText}"`,
+          'INFO',
+        );
+
+        similarity = calculateSimilarity(
+          normalizedPick,
+          elementText,
+          pickWords,
+        );
+        matchType = similarity > 0.8 ? 'moneyline_exact' : 'moneyline_partial';
+      }
+
+      if (similarity > 0.5) {
+        // Umbral más bajo para mayor flexibilidad
+        candidates.push({
           element: element,
           odds: odds,
-          description: text,
-          method: 'spread_pattern',
-        };
+          description: elementText,
+          similarity: similarity,
+          matchType: matchType,
+        });
+
+        logMessage(
+          `✅ Candidato encontrado: "${elementText}" - Cuota: ${odds} - Similitud: ${similarity.toFixed(
+            2,
+          )} (${matchType})`,
+          'SUCCESS',
+        );
       }
     }
-  }
 
-  return null;
-}
+    // Ordenar por similitud
+    candidates.sort((a, b) => b.similarity - a.similarity);
 
-// Búsqueda por equipo y handicap separados
-async function searchByTeamAndHandicap(pick) {
-  logWithTimestamp(`🎯 Búsqueda por equipo + handicap: "${pick}"`, 'INFO');
+    if (candidates.length > 0) {
+      logMessage(
+        `✅ Mejor candidato: "${candidates[0].description}" (${candidates[0].matchType})`,
+        'SUCCESS',
+      );
 
-  const spreadMatch = pick.match(/(.+?)\s*([+-]?\d+\.?\d*)/);
-  if (!spreadMatch) return null;
+      // Mostrar top 3 candidatos
+      candidates.slice(0, 3).forEach((candidate, index) => {
+        logMessage(
+          `  ${index + 1}. "${candidate.description}" - Cuota: ${
+            candidate.odds
+          } - Similitud: ${candidate.similarity.toFixed(2)}`,
+          'INFO',
+        );
+      });
 
-  const team = spreadMatch[1].trim();
-  const handicap = spreadMatch[2];
-
-  // Buscar secciones que contengan el equipo
-  const teamElements = Array.from(document.querySelectorAll('*')).filter((el) =>
-    el.textContent?.toLowerCase().includes(team.toLowerCase()),
-  );
-
-  for (const teamElement of teamElements) {
-    // Buscar handicaps cerca de este equipo
-    const parent =
-      teamElement.closest(
-        '[class*="match"], [class*="event"], [class*="game"]',
-      ) || teamElement.parentElement;
-    if (parent) {
-      const handicapElements = parent.querySelectorAll('*');
-      for (const handicapEl of handicapElements) {
-        const text = handicapEl.textContent?.trim() || '';
-        if (text.includes(handicap)) {
-          const odds = extractOddsFromElement(handicapEl);
-          if (odds) {
-            return {
-              element: handicapEl,
-              odds: odds,
-              description: `${team} ${handicap}`,
-              method: 'team_handicap',
-            };
-          }
-        }
-      }
+      return candidates[0];
     }
-  }
 
-  return null;
+    logMessage('❌ No se encontró la apuesta específica', 'ERROR');
+    return null;
+  } catch (error) {
+    logMessage(`❌ Error buscando apuesta: ${error.message}`, 'ERROR');
+    return null;
+  }
 }
 
-// Búsqueda por patrones alternativos
-async function searchByAlternativePatterns(pick) {
-  logWithTimestamp(`🎯 Búsqueda alternativa: "${pick}"`, 'INFO');
+// Ejecutar apuesta
+async function executeBet(element, amount, messageId) {
+  try {
+    logMessage('🎯 Ejecutando apuesta...', 'INFO');
 
-  // Probar variaciones del nombre del equipo
-  const teamVariations = generateTeamVariations(pick);
+    // Click en la selección
+    await clickElement(element);
+    await wait(2000);
 
-  for (const variation of teamVariations) {
-    const elements = document.querySelectorAll('*');
-    for (const element of elements) {
-      const text = element.textContent?.trim() || '';
-      if (text.toLowerCase().includes(variation.toLowerCase())) {
-        const odds = extractOddsFromElement(element);
-        if (odds) {
-          return {
-            element: element,
-            odds: odds,
-            description: text,
-            method: 'alternative_pattern',
-          };
-        }
-      }
+    // Buscar campo de importe
+    const stakeInput = await findStakeInput();
+    if (!stakeInput) {
+      throw new Error('Campo de importe no encontrado');
     }
+
+    // Introducir cantidad
+    await typeInElement(stakeInput, amount.toString());
+    await wait(1000);
+
+    // Buscar botón de apostar
+    const betButton = await findBetButton();
+    if (!betButton) {
+      throw new Error('Botón de apostar no encontrado');
+    }
+
+    // Hacer click en apostar
+    await clickElement(betButton);
+    await wait(1500);
+
+    logMessage(`✅ Apuesta de ${amount}€ ejecutada correctamente`, 'SUCCESS');
+    sendBetResult(true, null, messageId, amount);
+  } catch (error) {
+    logMessage(`❌ Error ejecutando apuesta: ${error.message}`, 'ERROR');
+    sendBetResult(false, error.message, messageId);
   }
-
-  return null;
 }
 
-// Extraer palabras clave del pick
-function extractKeywords(pick) {
-  const words = pick.split(/\s+/);
-  return words.filter(
-    (word) =>
-      word.length > 2 &&
-      !['THE', 'AND', 'OR', 'VS', 'V'].includes(word.toUpperCase()),
-  );
-}
-
-// Generar variaciones del nombre del equipo
-function generateTeamVariations(pick) {
-  const team = pick.split(/\s*[+-]\d/)[0].trim(); // Extraer solo el nombre del equipo
-
-  const variations = [
-    team,
-    team.toUpperCase(),
-    team.toLowerCase(),
-    team.replace(/\s+/g, ''), // Sin espacios
-    team.replace(/\s+/g, '_'), // Con guiones bajos
-    team.split(' ')[0], // Solo primera palabra
-    team.split(' ').pop(), // Solo última palabra
+// Buscar campo de importe
+async function findStakeInput() {
+  const selectors = [
+    'input[inputmode="none"]',
+    'input[inputmode="decimal"]',
+    'input[type="number"]',
+    '[data-testid*="stake"] input',
+    '[class*="stake"] input',
+    '[class*="basket"] input[type="text"]',
+    '.sc-gppfCo input',
+    '.sc-wkolL input',
   ];
 
-  return [...new Set(variations)]; // Eliminar duplicados
+  for (const selector of selectors) {
+    const element = document.querySelector(selector);
+    if (element && isElementUsable(element)) {
+      logMessage(`✅ Campo de importe encontrado: ${selector}`, 'SUCCESS');
+      return element;
+    }
+  }
+
+  return null;
 }
 
-// Extraer cuota de un elemento
-function extractOddsFromElement(element) {
-  // Buscar en el elemento y sus hijos inmediatos
+// Buscar botón de apostar
+async function findBetButton() {
+  const selectors = [
+    'button[data-testid="basket-submit-button"]',
+    'button[data-testid*="place-bet"]',
+    'button[type="submit"]',
+    '.sc-erjLUo button',
+    '[class*="place-bet"] button',
+    '[class*="submit-bet"] button',
+  ];
+
+  for (const selector of selectors) {
+    const element = document.querySelector(selector);
+    if (element && isElementUsable(element)) {
+      const text = element.textContent?.toLowerCase() || '';
+      if (
+        text.includes('apostar') ||
+        text.includes('parier') ||
+        text.includes('bet')
+      ) {
+        logMessage(`✅ Botón de apostar encontrado: ${selector}`, 'SUCCESS');
+        return element;
+      }
+    }
+  }
+
+  return null;
+}
+
+// Extraer cuotas de un elemento
+function extractOdds(element) {
   const texts = [
     element.textContent?.trim() || '',
     element.getAttribute('data-odds') || '',
     element.querySelector('[class*="odd"]')?.textContent?.trim() || '',
-    element.querySelector('[class*="price"]')?.textContent?.trim() || '',
   ];
 
   for (const text of texts) {
-    // Patrones para detectar cuotas
-    const oddsPatterns = [
-      /\b(\d+\.?\d{1,3})\b/g, // Formato decimal: 2.17, 1.95, etc.
-      /\b(\d+)\s*\/\s*(\d+)\b/g, // Formato fraccionario: 5/4, 3/2, etc.
-    ];
-
-    for (const pattern of oddsPatterns) {
-      const matches = text.match(pattern);
-      if (matches) {
-        for (const match of matches) {
-          const odds = parseFloat(match);
-          // Validar que sea una cuota realista (entre 1.01 y 100)
-          if (odds >= 1.01 && odds <= 100) {
-            return odds;
-          }
-        }
+    // Buscar formato decimal: 2.15, 1.95, etc.
+    const match = text.match(/\b(\d{1,2}\.\d{1,3})\b/);
+    if (match) {
+      const odds = parseFloat(match[1]);
+      if (odds >= 1.01 && odds <= 100) {
+        return odds;
       }
     }
   }
@@ -997,189 +662,7 @@ function extractOddsFromElement(element) {
   return null;
 }
 
-// Realizar apuesta en elemento específico
-async function placeBetOnElement(element, amount) {
-  try {
-    logWithTimestamp('🎯 Realizando apuesta en elemento encontrado...', 'INFO');
-
-    // Click en el elemento de la apuesta
-    await humanClick(element);
-    await wait(2000);
-
-    // Buscar y rellenar campo de importe
-    const stakeInput = await findElement(
-      [
-        'input.sc-gppfCo.fHJcOI',
-        'input[inputmode="none"]',
-        '.sc-wkolL input[type="text"]',
-        '.sc-sddJj input',
-        '[data-testid*="basket"] input[type="text"]',
-        '[class*="basket"] input[type="text"]',
-        '.sc-gyoxqN input[type="text"]',
-        '.sc-kKQKPC input[type="text"]',
-        'input[type="number"]',
-      ],
-      5000,
-    );
-
-    await humanType(stakeInput, amount.toString());
-    await wait(1000);
-
-    // Click en botón de apostar
-    const placeBetButton = await findElement(
-      [
-        'button[data-testid="basket-submit-button"]',
-        'button.sc-kAyceB.ireRZ',
-        '.sc-erjLUo button',
-        'button:contains("Apostar")',
-        'button:contains("Parier")',
-        'button[type="submit"]',
-      ],
-      5000,
-    );
-
-    await humanClick(placeBetButton);
-    await wait(1500);
-
-    logWithTimestamp(
-      '✅ Apuesta de arbitraje completada exitosamente',
-      'SUCCESS',
-    );
-
-    chrome.runtime.sendMessage({
-      action: 'betResult',
-      success: true,
-      amount: amount,
-      messageId: arbitrageState.currentBet?.messageId,
-    });
-  } catch (error) {
-    throw new Error(`Error realizando apuesta: ${error.message}`);
-  }
-}
-
-// Funciones de login híbrido (sin cambios - mantener las anteriores)
-// ... [código de login anterior] ...
-
-// Detectar el tipo de página de Winamax
-function detectPageType() {
-  const url = window.location.href.toLowerCase();
-  const bodyText = document.body.textContent.toLowerCase();
-
-  // Verificar si es página de login
-  const hasLoginIframe = !!document.querySelector(
-    'iframe[name="login"], iframe[id="iframe-login"]',
-  );
-  const hasLoginForm = !!document.querySelector(
-    'form[action*="login"], form[data-node*="login"]',
-  );
-  const hasPasswordField = !!document.querySelector('input[type="password"]');
-  const hasLoginText =
-    bodyText.includes('login') ||
-    bodyText.includes('conectar') ||
-    bodyText.includes('iniciar');
-
-  // Verificar si es página de evento específico
-  const isEventPage =
-    url.includes('/apuestas-deportivas/match/') || url.includes('/match/');
-
-  // Verificar si es página de apuestas general
-  const hasStakeInput = !!document.querySelector(
-    'input[type="number"], input[inputmode="none"]',
-  );
-  const hasBetButton = !!document.querySelector(
-    'button[data-testid="basket-submit-button"]',
-  );
-  const hasBetText =
-    bodyText.includes('apostar') ||
-    bodyText.includes('parier') ||
-    bodyText.includes('bet');
-
-  // Verificar si ya está logueado
-  const hasUserElements = !!document.querySelector(
-    '.user, .account, [class*="user"], [class*="account"], [data-test*="user"]',
-  );
-  const hasLogoutButton = !!document.querySelector(
-    'a[href*="logout"], button[onclick*="logout"], [data-test*="logout"]',
-  );
-  const hasMainContent = !!document.querySelector(
-    '.content, .main, [class*="content"], [class*="main"], .dashboard',
-  );
-  const hasNavigation = !!document.querySelector(
-    'nav, .nav, .navigation, [class*="nav"]',
-  );
-
-  const isAlreadyLoggedIn =
-    (hasUserElements || hasLogoutButton) && hasMainContent && hasNavigation;
-
-  return {
-    isLogin:
-      hasLoginIframe || hasLoginForm || (hasPasswordField && hasLoginText),
-    isBetting: hasStakeInput && (hasBetText || hasBetButton),
-    isEventPage: isEventPage,
-    isAlreadyLoggedIn: isAlreadyLoggedIn,
-    hasLoginIframe: hasLoginIframe,
-    url: url,
-    details: {
-      hasLoginIframe,
-      hasLoginForm,
-      hasPasswordField,
-      hasLoginText,
-      hasStakeInput,
-      hasBetText,
-      hasUserElements,
-      hasLogoutButton,
-      hasMainContent,
-      hasNavigation,
-      isEventPage,
-    },
-  };
-}
-
-// Funciones de utilidad (mantener las anteriores)
-function findElement(selectors, timeout = 5000) {
-  return new Promise((resolve, reject) => {
-    const startTime = Date.now();
-    const selectorArray = Array.isArray(selectors) ? selectors : [selectors];
-
-    function check() {
-      for (const selector of selectorArray) {
-        let element;
-
-        if (selector.includes(':contains(')) {
-          const text = selector.match(/:contains\("([^"]+)"\)/)?.[1];
-          if (text) {
-            const xpath = `//button[contains(text(), "${text}")]`;
-            const result = document.evaluate(
-              xpath,
-              document,
-              null,
-              XPathResult.FIRST_ORDERED_NODE_TYPE,
-              null,
-            );
-            element = result.singleNodeValue;
-          }
-        } else {
-          element = document.querySelector(selector);
-        }
-
-        if (element && isElementUsable(element)) {
-          logWithTimestamp(`✅ Elemento encontrado: "${selector}"`, 'SUCCESS');
-          resolve(element);
-          return;
-        }
-      }
-
-      if (Date.now() - startTime > timeout) {
-        reject(new Error(`Elements not found: ${selectorArray.join(', ')}`));
-      } else {
-        setTimeout(check, 300);
-      }
-    }
-
-    check();
-  });
-}
-
+// Verificar si un elemento es usable
 function isElementUsable(element) {
   if (!element) return false;
 
@@ -1196,245 +679,139 @@ function isElementUsable(element) {
   );
 }
 
+// Click en elemento con simulación humana
+async function clickElement(element) {
+  if (!element) return false;
+
+  element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  await wait(300);
+
+  const rect = element.getBoundingClientRect();
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+
+  const events = ['mouseover', 'mousedown', 'mouseup', 'click'];
+
+  for (const eventType of events) {
+    const event = new MouseEvent(eventType, {
+      bubbles: true,
+      clientX: x,
+      clientY: y,
+      button: 0,
+    });
+    element.dispatchEvent(event);
+    await wait(50);
+  }
+
+  return true;
+}
+
+// Escribir en elemento
+async function typeInElement(element, text) {
+  if (!element || !text) return false;
+
+  element.focus();
+  await wait(100);
+
+  // Limpiar campo
+  element.value = '';
+  element.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(100);
+
+  // Escribir carácter por carácter
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    element.value += char;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(50);
+  }
+
+  element.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+// Función de espera
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function humanClick(element) {
-  return new Promise(async (resolve) => {
-    try {
-      if (!element) {
-        logWithTimestamp('❌ humanClick: elemento es null', 'ERROR');
-        resolve(false);
-        return;
-      }
-
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await wait(300);
-
-      const rect = element.getBoundingClientRect();
-      const centerX = rect.left + rect.width / 2;
-      const centerY = rect.top + rect.height / 2;
-
-      const events = [
-        'mouseover',
-        'mouseenter',
-        'mousemove',
-        'mousedown',
-        'mouseup',
-        'click',
-      ];
-
-      for (const eventType of events) {
-        const event = new MouseEvent(eventType, {
-          bubbles: true,
-          clientX: centerX,
-          clientY: centerY,
-          button: 0,
-        });
-        element.dispatchEvent(event);
-        await wait(25 + Math.random() * 25);
-      }
-
-      logWithTimestamp('✅ humanClick: completado exitosamente', 'SUCCESS');
-      resolve(true);
-    } catch (error) {
-      logWithTimestamp(`❌ humanClick error: ${error.message}`, 'ERROR');
-      resolve(false);
-    }
-  });
+// Enviar resultado de apuesta
+function sendBetResult(success, error, messageId, amount = null) {
+  chrome.runtime
+    .sendMessage({
+      action: 'betResult',
+      success: success,
+      error: error,
+      messageId: messageId,
+      amount: amount,
+    })
+    .catch(() => {});
 }
 
-function humanType(element, text) {
-  return new Promise(async (resolve) => {
-    try {
-      if (!element || !text) {
-        logWithTimestamp('❌ humanType: elemento o texto inválido', 'ERROR');
-        resolve(false);
-        return;
-      }
+// Función de logging
+function logMessage(message, level = 'INFO') {
+  const timestamp = new Date().toLocaleTimeString();
+  const logText = `[${timestamp}] ${message}`;
 
-      logWithTimestamp(`🔤 humanType: escribiendo "${text}"`, 'INFO');
+  console.log(logText);
 
-      element.focus();
-      await wait(100);
-
-      element.value = '';
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      await wait(100);
-
-      for (let i = 0; i < text.length; i++) {
-        const char = text[i];
-        const keyCode = char.charCodeAt(0);
-
-        element.dispatchEvent(
-          new KeyboardEvent('keydown', {
-            key: char,
-            keyCode: keyCode,
-            bubbles: true,
-          }),
-        );
-
-        element.value += char;
-        element.dispatchEvent(new Event('input', { bubbles: true }));
-
-        element.dispatchEvent(
-          new KeyboardEvent('keyup', {
-            key: char,
-            keyCode: keyCode,
-            bubbles: true,
-          }),
-        );
-
-        await wait(30 + Math.random() * 40);
-      }
-
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      await wait(50);
-
-      logWithTimestamp(
-        `✅ humanType: completado. Valor: "${element.value}"`,
-        'SUCCESS',
-      );
-      resolve(true);
-    } catch (error) {
-      logWithTimestamp(`❌ humanType error: ${error.message}`, 'ERROR');
-      resolve(false);
-    }
-  });
+  chrome.runtime
+    .sendMessage({
+      action: 'detailedLog',
+      message: logText,
+      level: level,
+    })
+    .catch(() => {});
 }
 
-function logWithTimestamp(message, level = 'INFO') {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] [WINAMAX-${level}] ${message}`;
-  console.log(logMessage);
-
+// Función de apuesta manual
+async function performManualBet(amount, messageId) {
   try {
-    chrome.runtime
-      .sendMessage({
-        action: 'detailedLog',
-        message: logMessage,
-        level: level,
-        timestamp: timestamp,
-      })
-      .catch(() => {});
-  } catch (error) {}
-}
+    logMessage(`💰 Apuesta manual de ${amount}€...`, 'INFO');
 
-// Función de debug mejorada
-function debugCurrentPage() {
-  logWithTimestamp('🔍 === DEBUG DE PÁGINA ACTUAL ===', 'INFO');
-
-  const pageType = detectPageType();
-  logWithTimestamp(
-    `📊 Análisis completo: ${JSON.stringify(pageType, null, 2)}`,
-    'INFO',
-  );
-
-  if (arbitrageState.isSearching) {
-    logWithTimestamp('🔍 Estado: Buscando apuesta específica...', 'INFO');
-  }
-
-  // Debug específico para páginas de evento
-  if (pageType.isEventPage) {
-    logWithTimestamp('⚽ Página de evento detectada', 'SUCCESS');
-
-    // Debug de pestañas/secciones disponibles
-    logWithTimestamp(
-      '📋 Analizando pestañas de apuestas disponibles...',
-      'INFO',
-    );
-    const filterButtons = document.querySelectorAll(
-      '.filter-button, [class*="filter"], [class*="tab"], [class*="section"]',
-    );
-
-    logWithTimestamp(
-      `🗂️ ${filterButtons.length} pestañas encontradas:`,
-      'INFO',
-    );
-    filterButtons.forEach((button, index) => {
-      const text = button.textContent?.trim();
-      const isActive =
-        button.classList.contains('active') ||
-        button.classList.contains('selected') ||
-        button.getAttribute('aria-selected') === 'true';
-      if (text && text.length > 0) {
-        logWithTimestamp(
-          `  ${index + 1}. "${text}" ${isActive ? '(ACTIVA)' : ''}`,
-          'INFO',
-        );
-      }
-    });
-
-    // Debug de elementos de apuesta en la sección actual
-    const betElements = document.querySelectorAll(
-      'button[class*="odd"], button[class*="bet"], [class*="market"] button, [class*="selection"] button',
-    );
-    logWithTimestamp(
-      `🎯 ${betElements.length} elementos de apuesta en sección actual`,
-      'INFO',
-    );
-
-    // Mostrar primeros 10 elementos de apuesta
-    const visibleBets = Array.from(betElements)
-      .filter((el) => isElementUsable(el))
-      .slice(0, 10);
-
-    logWithTimestamp(
-      `🎲 Primeras ${visibleBets.length} apuestas visibles:`,
-      'INFO',
-    );
-    visibleBets.forEach((bet, index) => {
-      const text = bet.textContent?.trim();
-      const odds = extractOddsFromElement(bet);
-      if (text && text.length > 0) {
-        logWithTimestamp(
-          `  ${index + 1}. "${text.substring(0, 50)}..." ${
-            odds ? `(${odds})` : ''
-          }`,
-          'INFO',
-        );
-      }
-    });
-
-    // Buscar equipos mencionados
-    const bodyText = document.body.textContent;
-    const teamMatches = bodyText.match(
-      /[A-Z][A-Z\s]+(?=\s+(?:vs?\.?|v\.?|-))/g,
-    );
-    if (teamMatches) {
-      logWithTimestamp(
-        `🏈 Equipos detectados: ${teamMatches.slice(0, 5).join(', ')}`,
-        'INFO',
-      );
+    const stakeInput = await findStakeInput();
+    if (!stakeInput) {
+      throw new Error('Campo de importe no encontrado');
     }
-  }
 
-  logWithTimestamp('🔍 === FIN DEBUG ===', 'INFO');
+    await typeInElement(stakeInput, amount.toString());
+    await wait(1000);
+
+    const betButton = await findBetButton();
+    if (!betButton) {
+      throw new Error('Botón de apostar no encontrado');
+    }
+
+    await clickElement(betButton);
+    await wait(1500);
+
+    sendBetResult(true, null, messageId, amount);
+    logMessage(`✅ Apuesta manual completada`, 'SUCCESS');
+  } catch (error) {
+    logMessage(`❌ Error en apuesta manual: ${error.message}`, 'ERROR');
+    sendBetResult(false, error.message, messageId);
+  }
 }
 
-// Escuchar mensajes del background script
+// Escuchar mensajes del background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('📩 Content script recibió mensaje:', message.action);
+  console.log('📩 Mensaje recibido:', message.action);
 
   try {
     switch (message.action) {
       case 'ping':
-        console.log('🏓 Ping recibido, respondiendo...');
         sendResponse({ status: 'ready', url: window.location.href });
         break;
 
       case 'arbitrageBet':
-        console.log('🎯 Iniciando apuesta de arbitraje...');
         arbitrageState.currentBet = message.betData;
         processArbitrageBet(message.betData);
-        sendResponse({ received: true, action: 'arbitrageBet' });
+        sendResponse({ received: true });
         break;
 
       case 'manualBet':
-        console.log('🎯 Iniciando proceso de apuesta manual...');
-        performWinamaxManualBet(message.amount, message.messageId);
-        sendResponse({ received: true, action: 'manualBet' });
+        performManualBet(message.amount, message.messageId);
+        sendResponse({ received: true });
         break;
 
       case 'debugPage':
@@ -1443,79 +820,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
 
       default:
-        console.log('❓ Acción desconocida:', message.action);
         sendResponse({ error: 'Unknown action' });
     }
   } catch (error) {
-    console.error('❌ Error en content script:', error);
+    console.error('❌ Error:', error);
     sendResponse({ error: error.message });
   }
 
   return true;
 });
 
-// Función de apuesta manual (mantener la versión que funcionó)
-async function performWinamaxManualBet(amount, messageId) {
-  try {
-    logWithTimestamp(`🎯 Iniciando apuesta manual de ${amount}€...`, 'INFO');
+// Debug de página
+function debugCurrentPage() {
+  logMessage('🔍 === DEBUG DE PÁGINA ===', 'INFO');
+  logMessage(`🌐 URL: ${window.location.href}`, 'INFO');
 
-    await wait(1000);
+  const betElements = document.querySelectorAll(
+    'button[class*="odd"], button[class*="bet"]',
+  );
+  logMessage(`🎲 Elementos de apuesta: ${betElements.length}`, 'INFO');
 
-    const currentUrl = window.location.href.toLowerCase();
-    if (!currentUrl.includes('winamax')) {
-      throw new Error('URL incorrecta: Debes estar en Winamax');
-    }
-
-    const stakeInput = await findElement(
-      [
-        'input.sc-gppfCo.fHJcOI',
-        'input[inputmode="none"]',
-        '.sc-wkolL input[type="text"]',
-        '.sc-sddJj input',
-        '[data-testid*="basket"] input[type="text"]',
-        '[class*="basket"] input[type="text"]',
-        '.sc-gyoxqN input[type="text"]',
-        '.sc-kKQKPC input[type="text"]',
-        'input[type="number"]',
-      ],
-      8000,
-    );
-
-    await humanType(stakeInput, amount.toString());
-    await wait(1000);
-
-    const placeBetButton = await findElement(
-      [
-        'button[data-testid="basket-submit-button"]',
-        'button.sc-kAyceB.ireRZ',
-        '.sc-erjLUo button',
-        'button:contains("Apostar")',
-        'button:contains("Parier")',
-        'button[type="submit"]',
-      ],
-      5000,
-    );
-
-    await humanClick(placeBetButton);
-    await wait(1500);
-
-    chrome.runtime.sendMessage({
-      action: 'betResult',
-      success: true,
-      amount: amount,
-      messageId: messageId,
+  // Mostrar primeros 5 elementos
+  Array.from(betElements)
+    .slice(0, 5)
+    .forEach((el, i) => {
+      const text = el.textContent?.trim() || '';
+      const odds = extractOdds(el);
+      logMessage(
+        `  ${i + 1}. "${text.substring(0, 30)}..." ${odds ? `(${odds})` : ''}`,
+        'INFO',
+      );
     });
 
-    logWithTimestamp(`✅ Apuesta manual de ${amount}€ completada`, 'SUCCESS');
-  } catch (error) {
-    logWithTimestamp(`❌ Error en apuesta manual: ${error.message}`, 'ERROR');
-
-    chrome.runtime.sendMessage({
-      action: 'betResult',
-      success: false,
-      amount: amount,
-      messageId: messageId,
-      error: error.message,
-    });
-  }
+  logMessage('🔍 === FIN DEBUG ===', 'INFO');
 }
