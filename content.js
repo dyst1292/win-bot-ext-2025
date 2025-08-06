@@ -86,22 +86,63 @@ function parseTotalPick(pick) {
   return { type: parts[0], value: parts[1] };
 }
 
+/**
+ * =================================================================
+ * FUNCIÓN MODIFICADA: Compara Spreads usando la "palabra más larga"
+ * =================================================================
+ * Implementa la estrategia de buscar la palabra más larga del nombre del equipo
+ * para manejar abreviaturas de forma mucho más robusta y fiable.
+ */
 function isMatchingSpreadBet(description, parsedPick) {
-  const { team, handicap } = parsedPick;
-  const normalizedDesc = description.toUpperCase().trim();
-  const normalizedHandicap = handicap ? handicap.toUpperCase().trim() : '';
-  const normalizedTeam = team ? team.toUpperCase().trim() : '';
-  if (!normalizedDesc.includes(normalizedTeam)) return false;
-  if (!normalizedHandicap) return true;
+  const { team: pickTeamName, handicap: pickHandicap } = parsedPick;
+
+  // --- PASO 1: ENCONTRAR LA PALABRA CLAVE (la más larga del nombre del pick) ---
+  const teamWords = pickTeamName.trim().toLowerCase().split(/\s+/);
+  if (teamWords.length === 0) return false;
+
+  // Usamos 'reduce' para encontrar la palabra más larga de forma concisa.
+  // Compara cada palabra con la "más larga hasta ahora" y la va reemplazando.
+  const longestWord = teamWords.reduce((longest, current) => {
+    return current.length > longest.length ? current : longest;
+  }, '');
+
+  if (!longestWord) return false; // Comprobación de seguridad
+
+  // --- PASO 2: NORMALIZAR DATOS Y PREPARAR VARIACIONES DEL HANDICAP ---
+  const normalizedDesc = description.trim().toLowerCase();
+  const normalizedPickHandicap = pickHandicap
+    ? pickHandicap.trim().toLowerCase()
+    : '';
+
+  if (!normalizedPickHandicap) return false; // El pick debe tener un hándicap
+
+  // Creamos variaciones del hándicap para asegurar la coincidencia (ej: "-0.5" y "- 0.5")
   const handicapVariations = [
-    normalizedHandicap,
-    normalizedHandicap.replace(/\s+/g, ''),
-    normalizedHandicap.replace('+', ' +'),
-    normalizedHandicap.replace('-', ' -'),
+    normalizedPickHandicap,
+    normalizedPickHandicap.replace(/\s+/g, ''),
+    normalizedPickHandicap.replace('-', '- '),
+    normalizedPickHandicap.replace('+', '+ '),
   ];
-  return handicapVariations.some((variation) =>
+
+  // --- PASO 3: REALIZAR LAS COMPROBACIONES ---
+  // Comprobación A: ¿El texto del botón contiene nuestra palabra clave?
+  const hasLongestWord = normalizedDesc.includes(longestWord);
+
+  // Comprobación B: ¿El texto del botón contiene alguna de las variaciones del hándicap?
+  const hasHandicap = handicapVariations.some((variation) =>
     normalizedDesc.includes(variation),
   );
+
+  // Si AMBAS comprobaciones son verdaderas, hemos encontrado nuestra apuesta.
+  if (hasLongestWord && hasHandicap) {
+    logMessage(
+      `✅ Coincidencia por palabra clave [${longestWord}] y hándicap [${normalizedPickHandicap}] en "${description}"`,
+      'SUCCESS',
+    );
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -219,15 +260,15 @@ async function processBet(betData) {
       throw new Error('No estamos en una página válida de evento de Winamax');
     }
 
-    const menuFound = await navigateToBetTypeMenu(
-      betData.betType,
-      betData.sport,
-    );
-    if (!menuFound) {
-      throw new Error(
-        `No se encontró el submenú apropiado para ${betData.betType}.`,
-      );
-    }
+    // const menuFound = await navigateToBetTypeMenu(
+    //   betData.betType,
+    //   betData.sport,
+    // );
+    // if (!menuFound) {
+    //   throw new Error(
+    //     `No se encontró el submenú apropiado para ${betData.betType}.`,
+    //   );
+    // }
 
     const sectionsFound = await findBetSections(betData.betType, betData.sport);
     if (!sectionsFound) {
@@ -717,15 +758,78 @@ async function clickElement(element) {
   element.dispatchEvent(clickEvent);
 }
 
+/**
+ * =================================================================
+ * FUNCIÓN FINAL: Ejecuta la secuencia completa de la apuesta en el boleto.
+ * =================================================================
+ * 1. Añade la selección al boleto.
+ * 2. Introduce el importe.
+ * 3. Hace clic en el botón final para apostar.
+ */
 async function executeBet(element, amount, messageId) {
   try {
-    logMessage('🎯 Ejecutando apuesta...', 'INFO');
+    // --- PASO 1: AÑADIR LA SELECCIÓN AL BOLETO ---
+    logMessage(
+      `🖱️ Paso 1/3: Añadiendo "${globalState.currentBet.pick}" al boleto...`,
+      'INFO',
+    );
     await clickElement(element);
-    await wait(2000);
-    logMessage(`✅ Apuesta de ${amount}€ ejecutada (simulado)`, 'SUCCESS');
+    await wait(2000); // Esperamos a que la animación del boleto termine y esté listo.
+
+    // --- PASO 2: INTRODUCIR EL IMPORTE DE LA APUESTA ---
+    logMessage(
+      `💰 Paso 2/3: Buscando el campo para introducir ${amount}€...`,
+      'INFO',
+    );
+    const stakeInput = document.querySelector('input.sc-gppfCo.fHJcOI');
+
+    if (!stakeInput || !isElementVisible(stakeInput)) {
+      throw new Error(
+        'No se encontró el campo de importe en el boleto de apuestas.',
+      );
+    }
+
+    // Simulamos la entrada de texto como lo haría un usuario.
+    // Esto es importante para que frameworks como React/Vue detecten el cambio.
+    stakeInput.value = amount.toString().replace('.', ','); // Winamax usa comas para decimales.
+    stakeInput.dispatchEvent(new Event('input', { bubbles: true }));
+    stakeInput.dispatchEvent(new Event('change', { bubbles: true }));
+    logMessage(`✅ Importe de ${amount}€ introducido.`, 'SUCCESS');
+    await wait(500); // Pequeña pausa para que la UI se actualice con la ganancia potencial.
+
+    // --- PASO 3: CONFIRMAR LA APUESTA FINAL ---
+    logMessage(
+      '🚀 Paso 3/3: Buscando el botón final para confirmar la apuesta...',
+      'INFO',
+    );
+    const finalBetButton = document.querySelector(
+      'button[data-testid="basket-submit-button"]',
+    );
+
+    if (!finalBetButton || !isElementVisible(finalBetButton)) {
+      throw new Error('No se encontró el botón final para apostar.');
+    }
+
+    // =======================================================================
+    // === ¡¡¡ATENCIÓN!!! ESTA LÍNEA REALIZARÁ UNA APUESTA CON DINERO REAL ===
+    // === Mantenla comentada durante las pruebas. Descoméntala solo cuando ===
+    // === estés 100% seguro de que todo el proceso funciona correctamente. ===
+    // =======================================================================
+
+    // await clickElement(finalBetButton);
+    // await wait(3000); // Esperamos la confirmación de la apuesta
+
+    // Por ahora, simulamos que la apuesta fue exitosa sin hacer el clic final.
+    logMessage(
+      `🏆 ¡APUESTA REALIZADA (SIMULADO)! ${amount}€ en "${globalState.currentBet.pick}"`,
+      'SUCCESS',
+    );
     sendBetResult(true, null, messageId, amount);
   } catch (error) {
-    logMessage(`❌ Error ejecutando apuesta: ${error.message}`, 'ERROR');
+    logMessage(
+      `❌ Error durante la ejecución final en el boleto: ${error.message}`,
+      'ERROR',
+    );
     sendBetResult(false, error.message, messageId);
   }
 }
