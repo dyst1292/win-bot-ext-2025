@@ -123,7 +123,7 @@ document.addEventListener('DOMContentLoaded', function () {
       chatId: elements.chatId.value,
       email: elements.email.value,
       password: elements.password.value,
-      betAmount: elements.betAmount ? elements.betAmount.value : '30',
+      betAmount: elements.betAmount ? elements.betAmount.value : '0.5',
     };
 
     chrome.storage.local

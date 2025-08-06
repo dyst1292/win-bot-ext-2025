@@ -352,10 +352,12 @@ async function navigateToBetTypeMenu(betType, sport) {
 
 /**
  * =================================================================
- * FUNCIÓN FINAL: Encuentra secciones con lógica de coincidencia DUAL
+ * FUNCIÓN CORREGIDA: Encuentra secciones con lógica para BALONCESTO
  * =================================================================
- * - Usa coincidencia EXACTA (===) para SPREADS y TOTALS para evitar errores de orden.
- * - Usa coincidencia FLEXIBLE (.includes()) para MONEYLINE para mayor robustez.
+ *
+ * Usa coincidencia EXACTA (===) para SPREADS y TOTALS para evitar errores de orden.
+ * Usa coincidencia FLEXIBLE (.includes()) para MONEYLINE para mayor robustez.
+ * Añade casos específicos para BALONCESTO.
  */
 async function findBetSections(betType, sport) {
   try {
@@ -371,58 +373,73 @@ async function findBetSections(betType, sport) {
     let sectionTitlesToSearch = [];
 
     // ====================================================================
-    // ===== ORDEN DEFINIDO POR EL USUARIO: Partido completo va PRIMERO =====
+    // ===== ORDEN DEFINIDO POR DEPORTE Y TIPO DE APUESTA  ===============
     // ====================================================================
 
-    if (betType === 'SPREADS' && sport === 'FOOTBALL') {
-      sectionTitlesToSearch = [
-        'hándicap asiático (handicap)',
-        'hándicap asiático',
-        '1ª mitad - hándicap asiático (handicap)', // La primera mitad se busca DESPUÉS
-        '1ª mitad - hándicap asiático',
-      ];
-    } else if (betType === 'TOTALS' && sport === 'FOOTBALL') {
-      sectionTitlesToSearch = [
-        'número total de goles', // Partido completo primero
-        '1ª mitad - número total de goles', // Primera mitad después
-      ];
+    if (betType === 'SPREADS') {
+      if (sport === 'FOOTBALL') {
+        sectionTitlesToSearch = [
+          'hándicap asiático (handicap)',
+          'hándicap asiático',
+          '1ª mitad - hándicap asiático (handicap)',
+          '1ª mitad - hándicap asiático',
+        ];
+      } else if (sport === 'BASKETBALL') {
+        // <-- ¡NUEVA LÓGICA PARA BALONCESTO SPREADS!
+        sectionTitlesToSearch = [
+          'hándicap de puntos (handicap)',
+          'hándicap de puntos',
+          // Aquí podrías añadir secciones de mitades/cuartos si es necesario
+        ];
+      }
+    } else if (betType === 'TOTALS') {
+      if (sport === 'FOOTBALL') {
+        sectionTitlesToSearch = [
+          'número total de goles',
+          '1ª mitad - número total de goles',
+        ];
+      } else if (sport === 'BASKETBALL') {
+        // <-- ¡NUEVA LÓGICA PARA BALONCESTO TOTALS!
+        sectionTitlesToSearch = [
+          'número total de puntos',
+          // Aquí podrías añadir secciones de mitades/cuartos si es necesario
+        ];
+      }
     } else if (betType === 'MONEYLINE') {
       sectionTitlesToSearch = ['resultado'];
-    } else if (betType === 'SPREADS') {
-      // SPREADS para otros deportes (ej: Basket)
-      sectionTitlesToSearch = [
-        'hándicap de puntos (handicap)',
-        'hándicap de puntos',
-        // Aquí podrías añadir secciones de mitades/cuartos para basket si es necesario
-      ];
     }
 
     if (sectionTitlesToSearch.length === 0) {
       logMessage(
-        `⚠️ No hay configuración de búsqueda para ${betType} y ${sport}`,
+        `⚠️ No hay configuración de búsqueda para ${betType} y ${
+          sport || 'desconocido'
+        }`,
         'WARN',
       );
       return false;
     }
 
+    logMessage(
+      `📋 Títulos a buscar (en orden): ${JSON.stringify(
+        sectionTitlesToSearch,
+      )}`,
+      'INFO',
+    );
+
     const addedContainers = new Set();
 
     for (const titleToSearch of sectionTitlesToSearch) {
       for (const element of allElements) {
-        if (element.children.length > 2) continue; // Filtro para evitar elementos complejos
+        if (element.children.length > 2) continue;
 
         const text = element.textContent?.trim().toLowerCase() || '';
         let isMatch = false;
 
-        // ======================================================
-        // ===== LÓGICA DE COINCIDENCIA DUAL (EXACTA vs. FLEXIBLE) =====
-        // ======================================================
+        // Lógica de coincidencia dual
         if (betType === 'SPREADS' || betType === 'TOTALS') {
-          // Para SPREADS y TOTALS, usamos coincidencia EXACTA para evitar el problema del "includes".
-          isMatch = text === titleToSearch;
+          isMatch = text === titleToSearch.toLowerCase(); // Coincidencia exacta
         } else {
-          // Para MONEYLINE y otros tipos, mantenemos la flexibilidad del "includes".
-          isMatch = text.includes(titleToSearch);
+          isMatch = text.includes(titleToSearch.toLowerCase()); // Coincidencia flexible
         }
 
         if (isMatch) {
@@ -434,11 +451,9 @@ async function findBetSections(betType, sport) {
             const uniqueTitle = element.textContent.trim();
             logMessage(
               `✅ Sección encontrada: "${uniqueTitle}" (Método: ${
-                isMatch
-                  ? betType === 'SPREADS' || betType === 'TOTALS'
-                    ? 'Exacto'
-                    : 'Flexible'
-                  : ''
+                betType === 'SPREADS' || betType === 'TOTALS'
+                  ? 'Exacto'
+                  : 'Flexible'
               })`,
               'SUCCESS',
             );
@@ -837,8 +852,8 @@ async function executeBet(element, amount, messageId) {
     // === estés 100% seguro de que todo el proceso funciona correctamente. ===
     // =======================================================================
 
-    // await clickElement(finalBetButton);
-    // await wait(3000); // Esperamos la confirmación de la apuesta
+    await clickElement(finalBetButton);
+    await wait(3000); // Esperamos la confirmación de la apuesta
 
     // Por ahora, simulamos que la apuesta fue exitosa sin hacer el clic final.
     logMessage(

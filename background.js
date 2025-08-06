@@ -8,7 +8,7 @@ let botConfig = {
   active: false,
   loggedIn: false,
   lastUpdateId: 0,
-  defaultBetAmount: 30,
+  defaultBetAmount: 0.5,
 };
 
 // Configuración por defecto para primera instalación
@@ -17,7 +17,7 @@ const DEFAULT_CONFIG = {
   chatId: '',
   email: '',
   password: '',
-  defaultBetAmount: 30,
+  defaultBetAmount: 0.5,
 };
 
 // Cargar configuración real desde storage al iniciar
