@@ -725,10 +725,12 @@ function parseArbitrageMessage(text, messageId) {
     let link = null;
     let betType = null;
     let player = null;
+    let sport = 'UNKNOWN';
 
     // Detectar tipo de apuesta del header MEJORADO
     if (text.includes('TENNIS') && text.includes('MONEYLINE')) {
       betType = 'TENNIS_MONEYLINE';
+      sport = 'TENNIS'; // <-- Asignar deporte
       sendLogToPopup('🎾 Tipo detectado: TENNIS MONEYLINE', 'INFO');
 
       // Para tenis moneyline, buscar el jugador en formato **PLAYER**
@@ -738,12 +740,36 @@ function parseArbitrageMessage(text, messageId) {
         pick = player; // El pick es directamente el nombre del jugador
         sendLogToPopup(`🎾 Jugador detectado: ${player}`, 'INFO');
       }
+    } else if (
+      text.includes('FOOTBALL') &&
+      (text.includes('(SPREAD)') || text.includes('SPREADS'))
+    ) {
+      betType = 'SPREADS';
+      sport = 'FOOTBALL'; // <-- Asignar deporte
+      sendLogToPopup('⚽ Tipo detectado: FOOTBALL SPREAD', 'INFO');
+    } else if (
+      text.includes('BASKETBALL') &&
+      (text.includes('(SPREAD)') || text.includes('SPREADS'))
+    ) {
+      betType = 'SPREADS'; // Aunque la lógica del mensaje sea SPREAD, en la casa de apuestas es 'Hándicap de puntos'
+      sport = 'BASKETBALL'; // <-- Asignar deporte
+      sendLogToPopup('🏀 Tipo detectado: BASKETBALL SPREAD', 'INFO');
     } else if (text.includes('(TOTALS)') || text.includes('TOTALS')) {
       betType = 'TOTALS';
     } else if (text.includes('(SPREAD)') || text.includes('SPREADS')) {
       betType = 'SPREADS';
     } else if (text.includes('(MONEYLINE)') || text.includes('MONEYLINE')) {
       betType = 'MONEYLINE';
+    }
+
+    // Si no se detectó el deporte por el encabezado, intentar buscar emojis
+    if (sport === 'UNKNOWN') {
+      if (text.includes('⚽')) sport = 'FOOTBALL';
+      else if (text.includes('🏀')) sport = 'BASKETBALL';
+      else if (text.includes('🎾')) sport = 'TENNIS';
+      if (sport !== 'UNKNOWN') {
+        sendLogToPopup(`🔍 Deporte detectado por emoji: ${sport}`, 'INFO');
+      }
     }
 
     // Si no se detectó pick con el método específico, usar método general
@@ -874,6 +900,7 @@ function parseArbitrageMessage(text, messageId) {
       player: player,
       matchInfo: matchInfo,
       originalText: text,
+      sport: sport,
     };
   } catch (error) {
     sendLogToPopup(`❌ Error parseando mensaje: ${error.message}`);
