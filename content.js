@@ -127,6 +127,64 @@ function isMatchingTotalBet(description, parsedPick) {
   return false;
 }
 
+/**
+ * =================================================================
+ * NUEVA FUNCIÓN CORREGIDA: Limpia el boleto de apuestas de forma precisa
+ * =================================================================
+ * 1. Lee el número de selecciones.
+ * 2. Si es mayor que 0, busca y hace clic en el SVG de la papelera.
+ */
+async function clearBetSlipIfNeeded() {
+  try {
+    logMessage('🗑️ Verificando el estado del boleto de apuestas...', 'INFO');
+
+    // Paso 1: Localizar el SPAN que contiene el número de selecciones.
+    // Selector: <span class="sc-kXSgjd ghJQHK">
+    const selectionCountElement = document.querySelector('.sc-kXSgjd.ghJQHK');
+
+    if (!selectionCountElement) {
+      logMessage(
+        '⚠️ No se pudo encontrar el contador de selecciones del boleto. Asumiendo que está vacío.',
+        'WARN',
+      );
+      return; // Salimos de la función si no encontramos el contador.
+    }
+
+    // Paso 2: Leer el número y convertirlo a un entero.
+    const selectionCount = parseInt(selectionCountElement.textContent, 10) || 0;
+
+    // Paso 3: Decidir si actuar basado en el número de selecciones.
+    if (selectionCount > 0) {
+      logMessage(
+        `🚮 El boleto contiene ${selectionCount} selección(es). Procediendo a limpiar...`,
+        'WARN',
+      );
+
+      // Paso 4: Localizar el icono SVG de la papelera. Es el elemento correcto para el clic.
+      // Selector: <svg class="sc-ekXCdx dRNLRj">
+      const trashCanIcon = document.querySelector('svg.sc-ekXCdx.dRNLRj');
+
+      if (trashCanIcon && isElementVisible(trashCanIcon)) {
+        await clickElement(trashCanIcon);
+        await wait(1500); // Damos un poco más de tiempo para que la UI se actualice completamente.
+        logMessage('✅ Boleto limpiado con éxito.', 'SUCCESS');
+      } else {
+        logMessage(
+          '❌ No se encontró el icono de la papelera para hacer clic, aunque el boleto no está vacío.',
+          'ERROR',
+        );
+      }
+    } else {
+      logMessage('👍 El boleto de apuestas ya está vacío.', 'INFO');
+    }
+  } catch (error) {
+    logMessage(
+      `❌ Error crítico al intentar limpiar el boleto de apuestas: ${error.message}`,
+      'ERROR',
+    );
+  }
+}
+
 // ========================================
 // FUNCIONES PRINCIPALES (AHORA GENÉRICAS)
 // ========================================
@@ -154,6 +212,8 @@ async function processBet(betData) {
         'El evento no está disponible en Winamax (mensaje: "Partido no disponible").',
       );
     }
+
+    await clearBetSlipIfNeeded();
 
     if (!isValidWinamaxPage()) {
       throw new Error('No estamos en una página válida de evento de Winamax');
