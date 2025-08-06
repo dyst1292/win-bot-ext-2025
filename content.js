@@ -195,11 +195,9 @@ async function processBet(betData) {
   }
 }
 
-/**
- * =================================================================
- * FUNCIÓN MODIFICADA: Navega al menú correcto según el tipo de apuesta
- * =================================================================
- */
+// =================================================================
+// FUNCIÓN MODIFICADA: Navega al menú correcto según el tipo de apuesta
+// =================================================================
 async function navigateToBetTypeMenu(betType, sport) {
   try {
     logMessage(
@@ -219,8 +217,10 @@ async function navigateToBetTypeMenu(betType, sport) {
       keyword = 'diferencia de puntos';
     } else if (betType === 'TOTALS' && sport === 'FOOTBALL') {
       keyword = 'total de goles';
+    } else if (betType === 'MONEYLINE') {
+      // <-- NUEVA CONDICIÓN
+      keyword = 'resultado';
     } else {
-      // Añadir más lógicas para otros deportes/tipos aquí
       keyword = 'total'; // fallback genérico
     }
 
@@ -251,7 +251,7 @@ async function navigateToBetTypeMenu(betType, sport) {
 
 /**
  * =================================================================
- * FUNCIÓN MODIFICADA: Encuentra las secciones correctas según el tipo de apuesta
+ * FUNCIÓN FINAL: Encuentra secciones de forma flexible y en el orden correcto
  * =================================================================
  */
 async function findBetSections(betType, sport) {
@@ -267,59 +267,64 @@ async function findBetSections(betType, sport) {
 
     let sectionTitlesToSearch = [];
 
+    // ====================================================================
+    // ===== ORDEN CORREGIDO: Los títulos más largos y específicos van PRIMERO =====
+    // ====================================================================
+
     if (betType === 'SPREADS' && sport === 'FOOTBALL') {
       sectionTitlesToSearch = [
-        'hándicap asiático (handicap)',
-        'hándicap asiático',
-        '1ª mitad - hándicap asiático (handicap)',
+        '1ª mitad - hándicap asiático (handicap)', // Más específico
         '1ª mitad - hándicap asiático',
+        'hándicap asiático (handicap)', // Más general
+        'hándicap asiático',
       ];
     } else if (betType === 'TOTALS' && sport === 'FOOTBALL') {
       sectionTitlesToSearch = [
-        'número total de goles', // Prioridad 1
-        '1ª mitad - número total de goles', // Prioridad 2
+        '1ª mitad - número total de goles', // Más específico primero
+        'número total de goles', // General después
       ];
+    } else if (betType === 'MONEYLINE') {
+      sectionTitlesToSearch = ['resultado']; // Este no tiene conflicto
     } else if (betType === 'SPREADS') {
-      // SPREADS para otros deportes
       sectionTitlesToSearch = [
         'hándicap de puntos (handicap)',
         'hándicap de puntos',
       ];
     }
-    // Añadir más lógicas aquí
 
     if (sectionTitlesToSearch.length === 0) {
       logMessage(
-        `⚠️ No hay una configuración de búsqueda de secciones para ${betType} y ${sport}`,
+        `⚠️ No hay configuración de búsqueda para ${betType} y ${sport}`,
         'WARN',
       );
       return false;
     }
 
-    const addedTitles = new Set();
+    const addedContainers = new Set(); // Usamos un Set para los contenedores y evitar duplicados
+
     for (const titleToSearch of sectionTitlesToSearch) {
       for (const element of allElements) {
+        // Solo consideramos elementos que podrían ser títulos (poca profundidad de hijos)
+        if (element.children.length > 2) continue;
+
         const text = element.textContent?.trim().toLowerCase() || '';
-        if (text === titleToSearch) {
-          const uniqueTitle = element.textContent.trim();
-          if (addedTitles.has(uniqueTitle)) continue;
 
-          logMessage(`✅ Sección encontrada: "${uniqueTitle}"`, 'SUCCESS');
-          addedTitles.add(uniqueTitle);
-
-          let sectionContainer = element.closest(
+        // Usamos .includes() para una búsqueda flexible
+        if (text.includes(titleToSearch)) {
+          const sectionContainer = element.closest(
             '.sc-kJCCEd, [class*="sc-jwunkD"], [class*="section"], .bet-group-template',
           );
-          if (sectionContainer) {
+
+          // Si encontramos un contenedor Y no lo hemos añadido ya...
+          if (sectionContainer && !addedContainers.has(sectionContainer)) {
+            const uniqueTitle = element.textContent.trim();
+            logMessage(`✅ Sección encontrada: "${uniqueTitle}"`, 'SUCCESS');
+
             foundSections.push({
               container: sectionContainer,
               title: uniqueTitle,
             });
-          } else {
-            logMessage(
-              `⚠️ No se encontró contenedor válido para: "${uniqueTitle}"`,
-              'WARN',
-            );
+            addedContainers.add(sectionContainer); // Marcar el contenedor como añadido
           }
         }
       }
@@ -330,6 +335,7 @@ async function findBetSections(betType, sport) {
         `✅ Encontradas ${foundSections.length} secciones en orden de prioridad.`,
         'SUCCESS',
       );
+      // El orden de `foundSections` ya respeta el de `sectionTitlesToSearch`
       globalState.betSections = foundSections;
       return true;
     }
@@ -353,7 +359,7 @@ async function searchBetInAllSections(pick, targetOdds) {
     );
 
     const betType = globalState.currentBet.betType;
-    let parsedPick;
+    let parsedPick; // Para SPREADS y TOTALS
 
     // Parsear el pick según el tipo de apuesta
     if (betType === 'SPREADS') {
@@ -368,6 +374,10 @@ async function searchBetInAllSections(pick, targetOdds) {
         `🔍 Buscando total: "${parsedPick.type} ${parsedPick.value}"`,
         'INFO',
       );
+    } else if (betType === 'MONEYLINE') {
+      // Para MONEYLINE, el pick es el nombre del equipo/jugador. No se necesita parseo complejo.
+      logMessage(`🔍 Buscando ganador: "${pick}"`, 'INFO');
+      parsedPick = pick; // No se necesita un objeto complejo
     }
 
     if (!parsedPick)
@@ -474,11 +484,28 @@ async function searchBetInSection(section, parsedPick, targetOdds) {
   }
 }
 
+/**
+ * =================================================================
+ * NUEVA FUNCIÓN: Comprobar si un botón coincide con un pick de MONEYLINE
+ * =================================================================
+ * Comprueba si el nombre del equipo/jugador coincide con la descripción.
+ */
+function isMatchingMoneylineBet(description, pick) {
+  // En MONEYLINE, el pick es directamente el nombre del equipo o jugador.
+  const normalizedDesc = description.toLowerCase().trim();
+  const normalizedPick = pick.toLowerCase().trim();
+
+  // Comprueba si la descripción del botón es exactamente el nombre del pick.
+  // Esto evita falsos positivos (p.ej. "Manchester" vs "Manchester United").
+  return normalizedDesc === normalizedPick;
+}
+
 async function findBetInVisibleButtons(section, parsedPick, targetOdds) {
   try {
     const betButtons = section.container.querySelectorAll(SELECTORS.BET_BUTTON);
     let bestInvalidOddsCandidate = null;
     const betType = globalState.currentBet.betType;
+    const originalPick = globalState.currentBet.pick; // Necesitamos el pick original para MONEYLINE
 
     for (const button of betButtons) {
       if (!isElementVisible(button)) continue;
@@ -499,6 +526,9 @@ async function findBetInVisibleButtons(section, parsedPick, targetOdds) {
         isMatch = isMatchingSpreadBet(description, parsedPick);
       } else if (betType === 'TOTALS') {
         isMatch = isMatchingTotalBet(description, parsedPick);
+      } else if (betType === 'MONEYLINE') {
+        // Para MONEYLINE, no usamos `parsedPick`, sino el pick original.
+        isMatch = isMatchingMoneylineBet(description, originalPick);
       }
 
       if (isMatch) {
@@ -671,9 +701,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ status: 'ready', url: window.location.href });
         break;
       case 'arbitrageBet':
-        const supportedTypes = ['SPREADS', 'TOTALS'];
+        const supportedTypes = ['SPREADS', 'TOTALS', 'MONEYLINE']; // <-- AÑADIR MONEYLINE AQUÍ
         if (supportedTypes.includes(message.betData.betType)) {
-          processBet(message.betData); // Llamada a la función genérica
+          processBet(message.betData);
           sendResponse({ received: true });
         } else {
           sendResponse({
