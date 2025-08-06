@@ -895,28 +895,26 @@ function logMessage(message, level = 'INFO') {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('📩 Mensaje recibido:', message.action);
-  try {
-    switch (message.action) {
-      case 'ping':
-        sendResponse({ status: 'ready', url: window.location.href });
-        break;
-      case 'arbitrageBet':
-        const supportedTypes = ['SPREADS', 'TOTALS', 'MONEYLINE']; // <-- AÑADIR MONEYLINE AQUÍ
-        if (supportedTypes.includes(message.betData.betType)) {
-          processBet(message.betData);
-          sendResponse({ received: true });
-        } else {
-          sendResponse({
-            error: `Tipo de apuesta no soportado: ${message.betData.betType}`,
-          });
-        }
-        break;
-      default:
-        sendResponse({ error: 'Acción no reconocida' });
+
+  if (message.action === 'arbitrageBet') {
+    const supportedTypes = ['SPREADS', 'TOTALS', 'MONEYLINE'];
+    if (supportedTypes.includes(message.betData.betType)) {
+      // No necesitas 'await' aquí, ya que el resultado se enviará
+      // con otro mensaje ('betResult').
+      processBet(message.betData);
+      sendResponse({ received: true }); // Informa al background que el mensaje fue recibido.
+    } else {
+      sendResponse({
+        error: `Tipo de apuesta no soportado: ${message.betData.betType}`,
+      });
     }
-  } catch (error) {
-    console.error('❌ Error procesando mensaje:', error);
-    sendResponse({ error: error.message });
+  } else if (message.action === 'ping') {
+    sendResponse({ status: 'ready', url: window.location.href });
   }
+
+  // Devuelve true solo si vas a llamar a sendResponse de forma asíncrona,
+  // lo cual no haces aquí (el resultado final se envía con otro mensaje).
+  // En este caso, puede que no sea estrictamente necesario, pero es una buena práctica
+  // mantenerlo por si acaso.
   return true;
 });

@@ -20,6 +20,13 @@ const DEFAULT_CONFIG = {
   defaultBetAmount: 0.5,
 };
 
+chrome.runtime.onStartup.addListener(async () => {
+  // Si el bot se reinicia, asumimos que cualquier apuesta en proceso falló.
+  // Esto previene que una apuesta quede bloqueada para siempre.
+  await chrome.storage.local.remove('currentlyProcessingId');
+  sendLogToPopup('🧹 Limpiado el estado de procesamiento al reiniciar el bot.');
+});
+
 // Cargar configuración real desde storage al iniciar
 chrome.storage.local
   .get(['botToken', 'chatId', 'email', 'password', 'lastUpdateId', 'betAmount'])
@@ -161,57 +168,63 @@ chrome.storage.local
     }
   });
 
-// Escuchar mensajes del popup
+// UN ÚNICO LISTENER PARA TODOS LOS MENSAJES
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Es crucial devolver true para respuestas asíncronas
+  let isAsync = false;
+
   switch (message.action) {
+    // --- Mensajes del Popup ---
     case 'updateConfig':
       updateConfig(message.config);
-      sendResponse({ success: true });
-      break;
-    case 'loginWinamax':
-      loginWinamax(message.credentials);
       sendResponse({ success: true });
       break;
     case 'startBot':
       startBot();
       sendResponse({ success: true });
       break;
-    case 'stopBot':
-      stopBot();
-      sendResponse({ success: true });
-      break;
-    case 'getStatus':
-      sendResponse({
-        status: {
-          active: botConfig.active,
-          loggedIn: botConfig.loggedIn,
-          queueLength: messageQueue.length,
-          processing: isProcessingMessage,
-        },
-      });
-      break;
-    case 'loadDefaults':
-      loadDefaultsToStorage();
-      sendResponse({ success: true });
-      break;
-    case 'testTelegram':
-      testTelegramConnection(message.token);
-      sendResponse({ success: true });
-      break;
-    case 'placeManualBet':
-      placeManualBet(message.amount);
-      sendResponse({ success: true });
-      break;
-    case 'debugTabs':
-      debugTabs();
-      sendResponse({ success: true });
-      break;
+    // ... añade todos tus otros 'case' del primer listener aquí ...
+
+    // --- Mensajes del Content Script ---
     case 'detailedLog':
       handleDetailedLog(message);
-      sendResponse({ success: true });
+      // No necesitas sendResponse si el emisor no espera respuesta
+      break;
+    case 'loginResult':
+      botConfig.loggedIn = message.success;
+      sendLogToPopup(
+        message.success ? '✅ Login exitoso' : '❌ Error en login',
+      );
+      if (message.success) {
+        sendTelegramMessage('✅ Login exitoso en Winamax');
+      }
+      break;
+    case 'betResult':
+      // Este listener global solo debería manejar los resultados que NO
+      // son de un arbitraje específico (ej: apuestas manuales)
+      if (
+        !message.messageId ||
+        message.messageId.toString().startsWith('manual_')
+      ) {
+        const result = message.success
+          ? `✅ Apuesta procesada exitosamente: ${
+              message.amount || botConfig.defaultBetAmount
+            }€`
+          : `⚠️ Error en apuesta: ${message.error || 'Error desconocido'}`;
+        sendLogToPopup(result);
+      }
+      // Los resultados de arbitraje son manejados por el listener temporal en processArbitrageMessage
+      break;
+    case 'contentReady':
+      sendLogToPopup(
+        `📱 Content script listo en: ${message.url || 'página desconocida'}`,
+      );
       break;
   }
-  return true;
+
+  // Si alguna de tus operaciones fuera asíncrona, deberías gestionar isAsync y devolverlo.
+  // Por ahora, para estas acciones, no parece ser el caso.
+  return isAsync;
 });
 
 function loadDefaultsToStorage() {
@@ -587,40 +600,48 @@ function addMessageToQueue(message, updateId) {
 }
 
 async function processMessageQueue() {
-  if (isProcessingMessage || messageQueue.length === 0) {
+  // Comprueba si ya hay un mensaje en proceso según el storage
+  const { currentlyProcessingId } = await chrome.storage.local.get(
+    'currentlyProcessingId',
+  );
+  if (currentlyProcessingId || messageQueue.length === 0) {
     return;
   }
 
-  isProcessingMessage = true;
+  const messageData = messageQueue.shift();
 
   try {
-    const messageData = messageQueue.shift();
+    // Guarda el ID del mensaje que vamos a procesar
+    await chrome.storage.local.set({
+      currentlyProcessingId: messageData.updateId,
+    });
 
     sendLogToPopup(
-      `🔄 Procesando mensaje de arbitraje (${messageQueue.length} restantes en cola)`,
+      `🔄 Procesando mensaje de arbitraje ID: ${messageData.updateId} (${messageQueue.length} restantes en cola)`,
     );
 
     // Procesar el mensaje y ESPERAR a que termine completamente
     await processArbitrageMessage(messageData.message, messageData.updateId);
 
-    // El mensaje se procesará completamente antes de continuar
-    sendLogToPopup(`✅ Mensaje completado. Continuando con cola...`);
+    sendLogToPopup(`✅ Mensaje ID: ${messageData.updateId} completado.`);
   } catch (error) {
-    sendLogToPopup(`❌ Error procesando mensaje de cola: ${error.message}`);
+    sendLogToPopup(
+      `❌ Error procesando mensaje de cola ID ${messageData.updateId}: ${error.message}`,
+    );
     console.error('Error processing queue message:', error);
   } finally {
-    isProcessingMessage = false;
+    // MUY IMPORTANTE: Limpiar el ID del storage para que el siguiente pueda procesarse
+    await chrome.storage.local.remove('currentlyProcessingId');
 
-    // Esperar un poco antes de procesar el siguiente mensaje
+    // Llama al siguiente en la cola si hay
     if (messageQueue.length > 0) {
       sendLogToPopup(
-        `⏳ Esperando antes de procesar siguiente mensaje. Cola: ${messageQueue.length}`,
+        `⏳ Pasando al siguiente mensaje. Cola: ${messageQueue.length}`,
       );
-      setTimeout(() => {
-        processMessageQueue();
-      }, 2000); // Pausa entre mensajes
+      // Llama sin timeout para procesar inmediatamente el siguiente
+      processMessageQueue();
     } else {
-      sendLogToPopup('✅ Toda la cola de mensajes procesada completamente');
+      sendLogToPopup('✅ Toda la cola de mensajes procesada.');
     }
   }
 }
