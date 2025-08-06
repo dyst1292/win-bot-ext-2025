@@ -10,25 +10,19 @@ const CONFIG = {
 };
 
 const SELECTORS = {
+  // Selectores existentes...
   FILTER_BUTTON: '.sc-gplwa-d.bIHQDs.filter-button',
-  SPREAD_SECTION: '[class*="sc-eeQVsz"]:has-text("Hándicap")',
-  LIST_VIEW_BUTTON: '.sc-bXxnNr.cokPNx', // Botón para cambiar a vista de lista
-  GRID_VIEW_SVG: 'svg rect[x="10"][y="10"]', // SVG específico del botón de lista
+  LIST_VIEW_BUTTON: '.sc-bXxnNr.cokPNx',
+  GRID_VIEW_SVG: 'svg rect[x="10"][y="10"]',
   MORE_SELECTIONS_BUTTON: '.sc-fNZVXS.cwIfgf.expand-button',
   MORE_SELECTIONS_TEXT: '.sc-cWKVQc.bGBBfC',
   BET_BUTTON: '.sc-lcDspb.hvhzTf.sc-fIyekj.kMmmnL.odd-button-wrapper',
   BET_DESCRIPTION: '.sc-eHVZpS.byWUOZ',
   BET_ODDS: '.sc-eIGzw.jphTtc',
-  // Selectores alternativos más amplios
-  BET_BUTTON_ALT: [
-    '.sc-lcDspb',
-    '[data-testid*="odd-button"]',
-    '.odd-button-wrapper',
-    'button[class*="odd"]',
-    '[class*="bet-group-outcome"] button',
-  ],
-  BET_DESCRIPTION_ALT: ['.sc-eHVZpS', '[class*="byWUOZ"]'],
-  BET_ODDS_ALT: ['.sc-eIGzw', '[class*="jphTtc"]'],
+  // =================================================================
+  // NUEVO SELECTOR PARA PARTIDO NO DISPONIBLE
+  // =================================================================
+  MATCH_NOT_AVAILABLE_LABEL: '.sc-bqZonL.hzUuFV', // El div que contiene "Partido no disponible"
 };
 
 // Estado global
@@ -56,6 +50,34 @@ function initializeContentScript() {
 }
 
 // ========================================
+// NUEVA FUNCIÓN DE VERIFICACIÓN
+// ========================================
+
+/**
+ * Verifica de forma rápida si la página muestra "Partido no disponible".
+ * Se ejecuta al principio para evitar procesamientos innecesarios.
+ * @returns {boolean} - Devuelve 'false' si el partido NO está disponible, 'true' si lo está.
+ */
+function isMatchAvailable() {
+  const notAvailableElement = document.querySelector(
+    SELECTORS.MATCH_NOT_AVAILABLE_LABEL,
+  );
+
+  if (
+    notAvailableElement &&
+    notAvailableElement.textContent?.trim() === 'Partido no disponible'
+  ) {
+    logMessage(
+      '❌ Detectado mensaje "Partido no disponible". El evento ha sido cancelado o no existe.',
+      'ERROR',
+    );
+    return false; // El partido NO está disponible.
+  }
+
+  return true; // El partido SÍ está disponible (o el mensaje no se encontró).
+}
+
+// ========================================
 // FUNCIONES PRINCIPALES PARA SPREAD
 // ========================================
 
@@ -69,10 +91,22 @@ async function processSpreadBet(betData) {
     spreadState.isProcessing = true;
     spreadState.currentBet = betData;
 
+    // =================================================================
+    // PASO 0: VERIFICACIÓN RÁPIDA DE DISPONIBILIDAD DEL EVENTO
+    // Esta es la primera comprobación para fallar rápido.
+    // =================================================================
+    if (!isMatchAvailable()) {
+      throw new Error(
+        'El evento no está disponible en Winamax (mensaje: "Partido no disponible").',
+      );
+    }
+    // =================================================================
+
     if (!isValidWinamaxPage()) {
       throw new Error('No estamos en una página válida de evento de Winamax');
     }
 
+    // El resto del flujo continúa como antes...
     const spreadMenuFound = await navigateToSpreadMenu(betData.sport);
     if (!spreadMenuFound) {
       throw new Error('No se encontró el submenú de Hándicap apropiado.');
@@ -88,7 +122,6 @@ async function processSpreadBet(betData) {
       betData.targetOdds,
     );
     if (!betFound) {
-      // El error específico ya se habrá lanzado desde la función de búsqueda
       throw new Error(
         `Pick "${betData.pick}" no encontrado con cuota válida tras revisar todas las secciones.`,
       );
@@ -241,11 +274,7 @@ async function findSpreadSections(sport) {
             let parent = element.parentElement,
               attempts = 0;
             while (parent && attempts < 8) {
-              if (
-                parent.querySelectorAll(
-                  '.sc-lcDspb, [data-testid*="odd-button"]',
-                ).length > 0
-              ) {
+              if (parent.querySelectorAll(SELECTORS.BET_BUTTON).length > 0) {
                 sectionContainer = parent;
                 break;
               }
@@ -256,7 +285,7 @@ async function findSpreadSections(sport) {
 
           if (sectionContainer) {
             const buttonCount = sectionContainer.querySelectorAll(
-              '.sc-lcDspb, [data-testid*="odd-button"]',
+              SELECTORS.BET_BUTTON,
             ).length;
             logMessage(
               `🎲 Contenedor encontrado con ${buttonCount} botones potenciales`,
@@ -378,15 +407,6 @@ async function searchSpreadBetInAllSections(pick, targetOdds) {
   }
 }
 
-/**
- * =================================================================
- * FUNCIÓN MODIFICADA Y REORDENADA
- * =================================================================
- * Ejecuta la secuencia de acciones en el orden exacto solicitado:
- * 1. Activa la vista de lista.
- * 2. Expande "Más selecciones".
- * 3. Busca el botón de la apuesta.
- */
 async function searchSpreadBetInSection(section, team, handicap, targetOdds) {
   try {
     logMessage(
@@ -394,14 +414,14 @@ async function searchSpreadBetInSection(section, team, handicap, targetOdds) {
       'INFO',
     );
     await activateListViewInSection(section);
-    await wait(1500); // Esperar a que la UI se actualice a modo lista
+    await wait(1500);
 
     logMessage(
       `(2/3) ➕ Expandiendo "MÁS SELECCIONES" en sección: "${section.title}"...`,
       'INFO',
     );
     await expandMoreSelectionsInSection(section);
-    await wait(2000); // Esperar a que se carguen las apuestas adicionales
+    await wait(2000);
 
     logMessage(
       `(3/3) 🔍 Escaneando botones en sección: "${section.title}"...`,
@@ -414,7 +434,7 @@ async function searchSpreadBetInSection(section, team, handicap, targetOdds) {
       targetOdds,
     );
 
-    return searchResult; // Devolver el resultado de la búsqueda (puede ser positivo o negativo)
+    return searchResult;
   } catch (error) {
     logMessage(
       `❌ Error crítico procesando sección "${section.title}": ${error.message}`,
@@ -572,10 +592,6 @@ async function expandMoreSelectionsInSection(section) {
   }
 }
 
-// ========================================
-// FUNCIONES AUXILIARES Y LISTENERS (Sin cambios)
-// ========================================
-
 function parseSpreadPick(pick) {
   const parts = pick.trim().split(/\s+/);
   if (parts.length < 2) return { team: pick, handicap: null };
@@ -642,7 +658,6 @@ async function executeBet(element, amount, messageId) {
     logMessage('🎯 Ejecutando apuesta...', 'INFO');
     await clickElement(element);
     await wait(2000);
-    // Aquí iría la lógica para introducir el importe y confirmar
     logMessage(`✅ Apuesta de ${amount}€ ejecutada (simulado)`, 'SUCCESS');
     sendBetResult(true, null, messageId, amount);
   } catch (error) {
