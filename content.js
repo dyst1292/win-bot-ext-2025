@@ -373,50 +373,48 @@ async function findBetSections(betType, sport) {
     let sectionTitlesToSearch = [];
 
     // ====================================================================
-    // ===== ORDEN DEFINIDO POR DEPORTE Y TIPO DE APUESTA  ===============
+    // ===== NUEVO: Palabras clave para EXCLUIR apuestas parciales ======
     // ====================================================================
+    const disqualifyingKeywords = [
+      '1er set',
+      '2º set',
+      '3er set',
+      '4º set',
+      '5º set', // Voleibol/Tenis
+      '1ª mitad',
+      '2ª mitad', // Fútbol
+      '1º cuarto',
+      '2º cuarto',
+      '3º cuarto',
+      '4º cuarto', // Baloncesto
+    ];
 
+    // Lógica para definir qué buscar (sin cambios)
     if (betType === 'SPREADS') {
       if (sport === 'FOOTBALL') {
         sectionTitlesToSearch = [
           'hándicap asiático (handicap)',
           'hándicap asiático',
-          // '1ª mitad - hándicap asiático (handicap)', // Ignorado
-          // '1ª mitad - hándicap asiático',             // Ignorado
         ];
-      } else if (sport === 'BASKETBALL') {
-        sectionTitlesToSearch = [
-          'hándicap de puntos (handicap)',
-          'hándicap de puntos',
-        ];
-      } else if (sport === 'VOLLEYBALL') {
-        // ===== NUEVA LÓGICA PARA VOLEIBOL =====
+      } else if (sport === 'BASKETBALL' || sport === 'VOLLEYBALL') {
         sectionTitlesToSearch = [
           'hándicap de puntos (handicap)',
           'hándicap de puntos',
         ];
       }
     } else if (betType === 'TOTALS') {
-      if (sport === 'FOOTBALL') {
-        sectionTitlesToSearch = [
-          'número total de goles',
-          // '1ª mitad - número total de goles', // Ignorado
-        ];
-      } else if (sport === 'BASKETBALL') {
-        sectionTitlesToSearch = ['número total de puntos'];
-      } else if (sport === 'VOLLEYBALL') {
-        // ===== NUEVA LÓGICA PARA VOLEIBOL =====
+      // Para Baloncesto y Voleibol se busca lo mismo
+      if (
+        sport === 'FOOTBALL' ||
+        sport === 'BASKETBALL' ||
+        sport === 'VOLLEYBALL'
+      ) {
         sectionTitlesToSearch = ['número total de puntos'];
       }
     } else if (betType === 'MONEYLINE') {
       if (sport === 'VOLLEYBALL') {
-        // ===== NUEVA LÓGICA PARA VOLEIBOL =====
-        sectionTitlesToSearch = [
-          'ganador del partido', // Prioridad para Voleibol, es más específico
-          'resultado',
-        ];
+        sectionTitlesToSearch = ['ganador del partido', 'resultado'];
       } else {
-        // Fallback para otros deportes (Fútbol, Tenis, etc.)
         sectionTitlesToSearch = ['resultado'];
       }
     }
@@ -445,16 +443,17 @@ async function findBetSections(betType, sport) {
         if (element.children.length > 2) continue;
 
         const text = element.textContent?.trim().toLowerCase() || '';
-        let isMatch = false;
 
-        // Lógica de coincidencia dual
-        if (betType === 'SPREADS' || betType === 'TOTALS') {
-          isMatch = text === titleToSearch.toLowerCase(); // Coincidencia exacta
-        } else {
-          isMatch = text.includes(titleToSearch.toLowerCase()); // Coincidencia flexible
-        }
+        // =================================================================
+        // ===== LÓGICA DE BÚSQUEDA MEJORADA CON EXCLUSIÓN =====
+        // =================================================================
+        const isMatch = text.includes(titleToSearch.toLowerCase());
+        const isDisqualified = disqualifyingKeywords.some((keyword) =>
+          text.includes(keyword),
+        );
 
-        if (isMatch) {
+        // La sección solo es válida si COINCIDE y NO ESTÁ DESCALIFICADA
+        if (isMatch && !isDisqualified) {
           const sectionContainer = element.closest(
             '.sc-kJCCEd, [class*="sc-jwunkD"], [class*="section"], .bet-group-template',
           );
@@ -462,14 +461,9 @@ async function findBetSections(betType, sport) {
           if (sectionContainer && !addedContainers.has(sectionContainer)) {
             const uniqueTitle = element.textContent.trim();
             logMessage(
-              `✅ Sección encontrada: "${uniqueTitle}" (Método: ${
-                betType === 'SPREADS' || betType === 'TOTALS'
-                  ? 'Exacto'
-                  : 'Flexible'
-              })`,
+              `✅ Sección de PARTIDO COMPLETO encontrada: "${uniqueTitle}"`,
               'SUCCESS',
             );
-
             foundSections.push({
               container: sectionContainer,
               title: uniqueTitle,
@@ -482,7 +476,7 @@ async function findBetSections(betType, sport) {
 
     if (foundSections.length > 0) {
       logMessage(
-        `✅ Encontradas ${foundSections.length} secciones en el orden de búsqueda correcto.`,
+        `✅ Encontradas ${foundSections.length} secciones de partido completo.`,
         'SUCCESS',
       );
       globalState.betSections = foundSections;
@@ -490,7 +484,7 @@ async function findBetSections(betType, sport) {
     }
 
     logMessage(
-      '❌ No se encontró ninguna de las secciones requeridas.',
+      '❌ No se encontró ninguna de las secciones requeridas para partido completo.',
       'ERROR',
     );
     return false;
