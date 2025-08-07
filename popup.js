@@ -21,6 +21,19 @@ document.addEventListener('DOMContentLoaded', function () {
   // Cargar configuración guardada
   loadConfig();
 
+  elements.logs.innerHTML = ''; // Limpiar el mensaje inicial
+  chrome.runtime
+    .sendMessage({ action: 'getLogs' })
+    .then((response) => {
+      if (response && response.logs) {
+        response.logs.forEach((log) => {
+          // Reutilizamos la función addLog para mostrar cada log guardado
+          addLog(log.text, log.time);
+        });
+      }
+    })
+    .catch((e) => console.error('Error pidiendo los logs:', e));
+
   // Event listeners
   if (elements.saveConfig) {
     elements.saveConfig.addEventListener('click', saveConfig);
@@ -381,34 +394,36 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   }
 
-  function addLog(message) {
+  function addLog(message, time = null) {
     if (!elements.logs) return;
 
-    const now = new Date().toLocaleTimeString('es-ES', {
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
+    // Si no se pasa un 'time', se crea uno nuevo. Si se pasa, se usa ese.
+    const timestamp =
+      time ||
+      new Date().toLocaleTimeString('es-ES', {
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
 
     const logEntry = document.createElement('div');
     logEntry.className = 'log-entry';
-    logEntry.innerHTML = `<span class="log-time">[${now}]</span> ${message}`;
+    logEntry.innerHTML = `<span class="log-time">[${timestamp}]</span> ${message}`;
 
     elements.logs.appendChild(logEntry);
     elements.logs.scrollTop = elements.logs.scrollHeight;
 
-    // Limitar a los últimos 50 logs
-    const logs = elements.logs.children;
-    if (logs.length > 50) {
-      elements.logs.removeChild(logs[0]);
+    // Opcional: Limitar los elementos en el DOM para no sobrecargarlo,
+    // aunque el array principal ya está limitado en el background.
+    while (elements.logs.children.length > 100) {
+      elements.logs.removeChild(elements.logs.firstChild);
     }
   }
-
   // Escuchar mensajes del background
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action === 'log') {
-      addLog(message.text);
+      addLog(message.log.text, message.log.time);
     }
   });
 });

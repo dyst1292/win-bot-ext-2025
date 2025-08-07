@@ -14,6 +14,9 @@ let botConfig = {
 let processedUpdateIds = new Set();
 const MAX_PROCESSED_IDS = 100;
 
+let persistentLogs = [];
+const MAX_LOGS = 100;
+
 // Configuración por defecto para primera instalación
 const DEFAULT_CONFIG = {
   token: '',
@@ -30,11 +33,16 @@ chrome.runtime.onStartup.addListener(async () => {
 
   // NUEVO: Cargar IDs previamente procesados para evitar duplicados tras un reinicio
   const { recentIds } = await chrome.storage.local.get('recentIds');
+  const { storedLogs } = await chrome.storage.local.get('storedLogs');
+
   if (recentIds && Array.isArray(recentIds)) {
     processedUpdateIds = new Set(recentIds);
     sendLogToPopup(
       `📋 Cargados ${processedUpdateIds.size} IDs recientes desde storage.`,
     );
+  }
+  if (storedLogs && Array.isArray(storedLogs)) {
+    persistentLogs = storedLogs;
   }
 });
 
@@ -194,8 +202,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       startBot();
       sendResponse({ success: true });
       break;
-    // ... añade todos tus otros 'case' del primer listener aquí ...
-
+    case 'getStatus':
+      // Respondemos inmediatamente con el estado actual del bot.
+      sendResponse({
+        status: {
+          active: botConfig.active,
+          loggedIn: botConfig.loggedIn,
+          // Comprobamos si hay algo en proceso consultando el ID guardado.
+          processing: !!chrome.storage.local.get('currentlyProcessingId')
+            .currentlyProcessingId,
+          queueLength: messageQueue.length,
+        },
+      });
+      // Como respondemos de forma síncrona, no es necesario devolver true.
+      break;
+    case 'getLogs':
+      sendResponse({ logs: persistentLogs });
+      // Devolvemos true porque la respuesta puede ser asíncrona
+      isAsync = true;
+      break;
     // --- Mensajes del Content Script ---
     case 'detailedLog':
       handleDetailedLog(message);
@@ -1137,18 +1162,34 @@ async function sendTelegramMessage(text, replyToMessageId = null) {
   }
 }
 
-function sendLogToPopup(message) {
+async function sendLogToPopup(message) {
+  // 1. Crear un objeto de log con timestamp
+  const now = new Date().toLocaleTimeString('es-ES', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const logEntry = { time: now, text: message };
+
+  // 2. Añadir al array y mantener el tamaño máximo de 100
+  persistentLogs.push(logEntry);
+  if (persistentLogs.length > MAX_LOGS) {
+    persistentLogs.shift(); // Elimina el log más antiguo
+  }
+
+  // 3. Guardar en el almacenamiento local de forma asíncrona
+  await chrome.storage.local.set({ storedLogs: persistentLogs });
+
+  // 4. Intentar enviar al popup si está abierto
   try {
-    chrome.runtime
-      .sendMessage({
-        action: 'log',
-        text: message,
-      })
-      .catch(() => {
-        // El popup no está abierto, ignorar error
-      });
+    // Ahora enviamos el objeto de log completo
+    await chrome.runtime.sendMessage({
+      action: 'log',
+      log: logEntry,
+    });
   } catch (error) {
-    // Ignorar errores de comunicación
+    // Ignorar el error si el popup no está abierto. Es normal.
   }
 }
 
