@@ -352,12 +352,12 @@ async function navigateToBetTypeMenu(betType, sport) {
 
 /**
  * =================================================================
- * FUNCIÓN CORREGIDA: Encuentra secciones con lógica para BALONCESTO
+ * FUNCIÓN CORREGIDA: Encuentra secciones con lógica para BALONCESTO Y VOLEIBOL
  * =================================================================
  *
  * Usa coincidencia EXACTA (===) para SPREADS y TOTALS para evitar errores de orden.
  * Usa coincidencia FLEXIBLE (.includes()) para MONEYLINE para mayor robustez.
- * Añade casos específicos para BALONCESTO.
+ * Añade casos específicos para BALONCESTO Y VOLEIBOL.
  */
 async function findBetSections(betType, sport) {
   try {
@@ -381,32 +381,44 @@ async function findBetSections(betType, sport) {
         sectionTitlesToSearch = [
           'hándicap asiático (handicap)',
           'hándicap asiático',
-          // '1ª mitad - hándicap asiático (handicap)',
-          // '1ª mitad - hándicap asiático',
+          // '1ª mitad - hándicap asiático (handicap)', // Ignorado
+          // '1ª mitad - hándicap asiático',             // Ignorado
         ];
       } else if (sport === 'BASKETBALL') {
-        // <-- ¡NUEVA LÓGICA PARA BALONCESTO SPREADS!
         sectionTitlesToSearch = [
           'hándicap de puntos (handicap)',
           'hándicap de puntos',
-          // Aquí podrías añadir secciones de mitades/cuartos si es necesario
+        ];
+      } else if (sport === 'VOLLEYBALL') {
+        // ===== NUEVA LÓGICA PARA VOLEIBOL =====
+        sectionTitlesToSearch = [
+          'hándicap de puntos (handicap)',
+          'hándicap de puntos',
         ];
       }
     } else if (betType === 'TOTALS') {
       if (sport === 'FOOTBALL') {
         sectionTitlesToSearch = [
           'número total de goles',
-          // '1ª mitad - número total de goles',
+          // '1ª mitad - número total de goles', // Ignorado
         ];
       } else if (sport === 'BASKETBALL') {
-        // <-- ¡NUEVA LÓGICA PARA BALONCESTO TOTALS!
-        sectionTitlesToSearch = [
-          'número total de puntos',
-          // Aquí podrías añadir secciones de mitades/cuartos si es necesario
-        ];
+        sectionTitlesToSearch = ['número total de puntos'];
+      } else if (sport === 'VOLLEYBALL') {
+        // ===== NUEVA LÓGICA PARA VOLEIBOL =====
+        sectionTitlesToSearch = ['número total de puntos'];
       }
     } else if (betType === 'MONEYLINE') {
-      sectionTitlesToSearch = ['resultado'];
+      if (sport === 'VOLLEYBALL') {
+        // ===== NUEVA LÓGICA PARA VOLEIBOL =====
+        sectionTitlesToSearch = [
+          'ganador del partido', // Prioridad para Voleibol, es más específico
+          'resultado',
+        ];
+      } else {
+        // Fallback para otros deportes (Fútbol, Tenis, etc.)
+        sectionTitlesToSearch = ['resultado'];
+      }
     }
 
     if (sectionTitlesToSearch.length === 0) {
