@@ -11,6 +11,9 @@ let botConfig = {
   defaultBetAmount: 0.5,
 };
 
+let processedUpdateIds = new Set();
+const MAX_PROCESSED_IDS = 100;
+
 // Configuración por defecto para primera instalación
 const DEFAULT_CONFIG = {
   token: '',
@@ -22,9 +25,17 @@ const DEFAULT_CONFIG = {
 
 chrome.runtime.onStartup.addListener(async () => {
   // Si el bot se reinicia, asumimos que cualquier apuesta en proceso falló.
-  // Esto previene que una apuesta quede bloqueada para siempre.
   await chrome.storage.local.remove('currentlyProcessingId');
   sendLogToPopup('🧹 Limpiado el estado de procesamiento al reiniciar el bot.');
+
+  // NUEVO: Cargar IDs previamente procesados para evitar duplicados tras un reinicio
+  const { recentIds } = await chrome.storage.local.get('recentIds');
+  if (recentIds && Array.isArray(recentIds)) {
+    processedUpdateIds = new Set(recentIds);
+    sendLogToPopup(
+      `📋 Cargados ${processedUpdateIds.size} IDs recientes desde storage.`,
+    );
+  }
 });
 
 // Cargar configuración real desde storage al iniciar
@@ -530,6 +541,21 @@ async function pollTelegramUpdates() {
 }
 
 function addMessageToQueue(message, updateId) {
+  // 1. VERIFICAR SI YA HEMOS VISTO ESTE ID
+  if (processedUpdateIds.has(updateId)) {
+    // Si ya está en el set, es un duplicado. Lo ignoramos.
+    sendLogToPopup(`🛡️ Ignorando mensaje duplicado ID: ${updateId}`);
+    return; // Salimos de la función inmediatamente
+  }
+
+  // 2. SI ES NUEVO, LO REGISTRAMOS INMEDIATAMENTE
+  processedUpdateIds.add(updateId);
+  // Opcional: Mantener el Set con un tamaño manejable
+  if (processedUpdateIds.size > MAX_PROCESSED_IDS) {
+    const oldestId = processedUpdateIds.values().next().value;
+    processedUpdateIds.delete(oldestId);
+  }
+
   const text = message.text || '';
 
   // Buscar patrones de arbitraje deportivo MEJORADO
@@ -632,6 +658,10 @@ async function processMessageQueue() {
   } finally {
     // MUY IMPORTANTE: Limpiar el ID del storage para que el siguiente pueda procesarse
     await chrome.storage.local.remove('currentlyProcessingId');
+
+    await chrome.storage.local.set({
+      recentIds: Array.from(processedUpdateIds),
+    });
 
     // Llama al siguiente en la cola si hay
     if (messageQueue.length > 0) {
