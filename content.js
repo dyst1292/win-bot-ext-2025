@@ -381,8 +381,8 @@ async function findBetSections(betType, sport) {
         sectionTitlesToSearch = [
           'hándicap asiático (handicap)',
           'hándicap asiático',
-          '1ª mitad - hándicap asiático (handicap)',
-          '1ª mitad - hándicap asiático',
+          // '1ª mitad - hándicap asiático (handicap)',
+          // '1ª mitad - hándicap asiático',
         ];
       } else if (sport === 'BASKETBALL') {
         // <-- ¡NUEVA LÓGICA PARA BALONCESTO SPREADS!
@@ -396,7 +396,7 @@ async function findBetSections(betType, sport) {
       if (sport === 'FOOTBALL') {
         sectionTitlesToSearch = [
           'número total de goles',
-          '1ª mitad - número total de goles',
+          // '1ª mitad - número total de goles',
         ];
       } else if (sport === 'BASKETBALL') {
         // <-- ¡NUEVA LÓGICA PARA BALONCESTO TOTALS!
