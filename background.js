@@ -843,8 +843,13 @@ function parseArbitrageMessage(text, messageId) {
       if (text.includes('⚽')) sport = 'FOOTBALL';
       else if (text.includes('🏀')) sport = 'BASKETBALL';
       else if (text.includes('🎾')) sport = 'TENNIS';
+      else if (text.includes('🏐') || text.toUpperCase().includes('VOLLEYBALL'))
+        sport = 'VOLLEYBALL';
       if (sport !== 'UNKNOWN') {
-        sendLogToPopup(`🔍 Deporte detectado por emoji: ${sport}`, 'INFO');
+        sendLogToPopup(
+          `🔍 Deporte detectado por emoji/keyword: ${sport}`,
+          'INFO',
+        );
       }
     }
 

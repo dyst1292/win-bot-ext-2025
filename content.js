@@ -352,44 +352,31 @@ async function navigateToBetTypeMenu(betType, sport) {
 
 /**
  * =================================================================
- * FUNCIÓN CORREGIDA: Encuentra secciones con lógica para BALONCESTO Y VOLEIBOL
+ * FUNCIÓN DE BÚSQUEDA DE SECCIONES DE APUESTA (Versión Limpia)
  * =================================================================
  *
- * Usa coincidencia EXACTA (===) para SPREADS y TOTALS para evitar errores de orden.
- * Usa coincidencia FLEXIBLE (.includes()) para MONEYLINE para mayor robustez.
- * Añade casos específicos para BALONCESTO Y VOLEIBOL.
+ * Busca los títulos de las secciones de apuesta (ej. "Hándicap de puntos")
+ * de manera precisa y segura.
+ * - Utiliza `startsWith()` para que el texto del elemento COMIENCE con el
+ * título buscado, evitando así coincidencias parciales como "1er set - ...".
+ * - Es compatible con Fútbol, Baloncesto y Voleibol.
+ * - Prioriza los títulos en el orden definido en `sectionTitlesToSearch`.
  */
 async function findBetSections(betType, sport) {
   try {
     logMessage(
-      `🔍 Buscando secciones para TIPO: ${betType} (Deporte: ${
+      `🎯 Iniciando búsqueda ELEGANTE de secciones para TIPO: ${betType}, DEPORTE: ${
         sport || 'No especificado'
-      })...`,
+      }...`,
       'INFO',
     );
     const foundSections = [];
-    const allElements = document.querySelectorAll('*');
+    const allElements = document.querySelectorAll(
+      'div, span, h1, h2, h3, h4, h5, h6',
+    );
+    const addedContainers = new Set();
 
     let sectionTitlesToSearch = [];
-
-    // ====================================================================
-    // ===== NUEVO: Palabras clave para EXCLUIR apuestas parciales ======
-    // ====================================================================
-    const disqualifyingKeywords = [
-      '1er set',
-      '2º set',
-      '3er set',
-      '4º set',
-      '5º set', // Voleibol/Tenis
-      '1ª mitad',
-      '2ª mitad', // Fútbol
-      '1º cuarto',
-      '2º cuarto',
-      '3º cuarto',
-      '4º cuarto', // Baloncesto
-    ];
-
-    // Lógica para definir qué buscar (sin cambios)
     if (betType === 'SPREADS') {
       if (sport === 'FOOTBALL') {
         sectionTitlesToSearch = [
@@ -403,12 +390,9 @@ async function findBetSections(betType, sport) {
         ];
       }
     } else if (betType === 'TOTALS') {
-      // Para Baloncesto y Voleibol se busca lo mismo
-      if (
-        sport === 'FOOTBALL' ||
-        sport === 'BASKETBALL' ||
-        sport === 'VOLLEYBALL'
-      ) {
+      if (sport === 'FOOTBALL') {
+        sectionTitlesToSearch = ['número total de goles'];
+      } else if (sport === 'BASKETBALL' || sport === 'VOLLEYBALL') {
         sectionTitlesToSearch = ['número total de puntos'];
       }
     } else if (betType === 'MONEYLINE') {
@@ -430,46 +414,39 @@ async function findBetSections(betType, sport) {
     }
 
     logMessage(
-      `📋 Títulos a buscar (en orden): ${JSON.stringify(
-        sectionTitlesToSearch,
-      )}`,
+      `📋 Títulos a buscar: ${JSON.stringify(sectionTitlesToSearch)}`,
       'INFO',
     );
 
-    const addedContainers = new Set();
+    for (const element of allElements) {
+      const text = (element.textContent || '')
+        .replace(/\u00A0/g, ' ')
+        .trim()
+        .toLowerCase();
 
-    for (const titleToSearch of sectionTitlesToSearch) {
-      for (const element of allElements) {
-        if (element.children.length > 2) continue;
+      if (!text) continue;
 
-        const text = element.textContent?.trim().toLowerCase() || '';
+      // Solución limpia usando startsWith()
+      const isMatch = sectionTitlesToSearch.some((title) =>
+        text.startsWith(title),
+      );
 
-        // =================================================================
-        // ===== LÓGICA DE BÚSQUEDA MEJORADA CON EXCLUSIÓN =====
-        // =================================================================
-        const isMatch = text.includes(titleToSearch.toLowerCase());
-        const isDisqualified = disqualifyingKeywords.some((keyword) =>
-          text.includes(keyword),
+      if (isMatch) {
+        const sectionContainer = element.closest(
+          '.sc-kJCCEd, [class*="sc-jwunkD"], [class*="section"], .bet-group-template',
         );
 
-        // La sección solo es válida si COINCIDE y NO ESTÁ DESCALIFICADA
-        if (isMatch && !isDisqualified) {
-          const sectionContainer = element.closest(
-            '.sc-kJCCEd, [class*="sc-jwunkD"], [class*="section"], .bet-group-template',
+        if (sectionContainer && !addedContainers.has(sectionContainer)) {
+          const uniqueTitle = element.textContent.trim();
+          logMessage(
+            `✅ Sección de PARTIDO COMPLETO encontrada: "${uniqueTitle}"`,
+            'SUCCESS',
           );
-
-          if (sectionContainer && !addedContainers.has(sectionContainer)) {
-            const uniqueTitle = element.textContent.trim();
-            logMessage(
-              `✅ Sección de PARTIDO COMPLETO encontrada: "${uniqueTitle}"`,
-              'SUCCESS',
-            );
-            foundSections.push({
-              container: sectionContainer,
-              title: uniqueTitle,
-            });
-            addedContainers.add(sectionContainer);
-          }
+          foundSections.push({
+            container: sectionContainer,
+            title: uniqueTitle,
+          });
+          addedContainers.add(sectionContainer);
         }
       }
     }
