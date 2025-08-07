@@ -853,6 +853,22 @@ function parseArbitrageMessage(text, messageId) {
       }
     }
 
+    if (sport === 'UNKNOWN') {
+      // Si después de todas las comprobaciones el deporte sigue siendo desconocido...
+      sendLogToPopup(`⚠️ Deporte no reconocido. Mensaje ignorado.`);
+
+      // Enviamos una respuesta a Telegram para notificar del problema.
+      sendTelegramMessage(
+        `❓ No se pudo reconocer el deporte en el siguiente mensaje. La apuesta no se procesará:\n\n"${text.substring(
+          0,
+          250,
+        )}..."`,
+        messageId, // Usamos el messageId para responder directamente al mensaje problemático
+      );
+
+      return null; // Detiene el procesamiento de este mensaje.
+    }
+
     // Si no se detectó pick con el método específico, usar método general
     if (!pick) {
       for (const line of lines) {
